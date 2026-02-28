@@ -1,0 +1,821 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+
+\title{SRT Valuation Model — Locked Parameters (Sections 1--8)\\Extended Explanations}
+\date{2026-02-28}
+
+\begin{document}
+\maketitle
+
+\section*{How to read this document}
+Each numbered item is a locked specification point. For each point:
+\begin{itemize}
+  \item \textbf{Parameter text} states the rule as it must be implemented.
+  \item \textbf{Explanation} provides implementation intuition and context.
+  \item \textbf{Formulas} are shown separately in display math (``lifted up'') when applicable.
+\end{itemize}
+
+\begin{enumerate}[label=\arabic*),leftmargin=*,align=left]
+
+\item \textbf{As-of anchor}
+\paragraph{Parameter text} Valuation is anchored to the market/curve date.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated to keep the model internally consistent.
+
+\item \textbf{As-of timestamp convention}
+\paragraph{Parameter text} As-of is end-of-day (COB) on the as-of date.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated to keep the model internally consistent.
+
+\item \textbf{``Future'' cashflows inclusion rule}
+\paragraph{Parameter text} Only include cashflows with $\text{cashflow date} > \text{as-of date}$ (strictly greater; if equal to as-of date it is excluded).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Premium payment frequency}
+\paragraph{Parameter text} Quarterly.
+\paragraph{Explanation} Specifies the premium mechanics: base notional, accrual convention, payment dates, and how premium responds to write-down events.
+
+\item \textbf{Payment date sourcing}
+\paragraph{Parameter text} Rules-only (no hybrid list+rules); schedule is generated from rules + user inputs.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Schedule anchor input}
+\paragraph{Parameter text} User must input First Payment Date (calendar date).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{First Payment Date validation}
+\paragraph{Parameter text} If the user enters an invalid calendar date $\rightarrow$ hard error.
+\paragraph{Explanation} Specifies the checks used to confirm the implementation is internally consistent and numerically stable.
+
+\item \textbf{Quarterly stepping rule}
+\paragraph{Parameter text} Generate dates by adding $+3$ calendar months each step (not $0.25y$).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{EOM toggle required}
+\paragraph{Parameter text} User must explicitly choose $\text{EOM} = \text{ON/OFF}$ (no default).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{EOM behavior (if ON)}
+\paragraph{Parameter text} If the anchor date is month-end, generated dates stay month-end (e.g., Jan 31 $\rightarrow$ Apr 30 $\rightarrow$ Jul 31).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{EOM behavior (if OFF)}
+\paragraph{Parameter text} Keep same day-of-month where possible; if the day doesn’t exist in a month, use the last valid day of that month (but don’t force month-end thereafter).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Business day adjustment for payment dates}
+\paragraph{Parameter text} Use Modified Following.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Calendar selection method}
+\paragraph{Parameter text} User chooses the holiday calendar from a dropdown.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Allowed calendars (dropdown set)}
+\paragraph{Parameter text} TARGET/TARGET2; Sweden; UK; Germany; France; Spain; Switzerland.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Joint calendar support}
+\paragraph{Parameter text} User can choose Joint of $N$ calendars; a date is a business day only if it is a business day in all selected calendars.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Business day definition}
+\paragraph{Parameter text} Non-business days include weekends AND holidays per the selected calendar(s).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Effective accrual start for valuation}
+\paragraph{Parameter text} We do not assume/compute past accrual. 
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} Accrual in valuation starts at:
+\[ t_{\text{start,eff}} = \max(\text{as-of date}, \text{Accrual Start Date}) \]
+
+\item \textbf{Accrual Start Date input}
+\paragraph{Parameter text} User must input Accrual Start Date (required, because it may be after as-of).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Accrual End Date input}
+\paragraph{Parameter text} User inputs Accrual End Date; if unknown, set it to Protection End.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} 
+\[ \text{Accrual End} = \text{Protection End} \]
+
+\item \textbf{Accrual date validation}
+\paragraph{Parameter text} If $\text{Accrual Start Date} > \text{Accrual End Date} \rightarrow$ hard error.
+\paragraph{Explanation} Specifies the checks used to confirm the implementation is internally consistent.
+
+\item \textbf{First payment date selection anchor}
+\paragraph{Parameter text} The first generated payment date is the first payment date strictly after $t_{\text{start,eff}}$ (not strictly after as-of).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Future-only schedule generation (valuation)}
+\paragraph{Parameter text} Generate payment dates forward only, starting from the first payment date strictly after $t_{\text{start,eff}}$, then $+3\text{M}$ until Accrual End.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Final stub payment date rule}
+\paragraph{Parameter text} If Accrual End is not already a scheduled payment date, add Accrual End as a final stub payment date (then apply business-day adjustment rules).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Final stub vs protection end}
+\paragraph{Parameter text} The payment date may fall after Protection End; what matters is accrual stops at Accrual End / Protection End per rules.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Accrual interval inclusion convention}
+\paragraph{Parameter text} Use include start, exclude end for year-fractions and accrual windows: $[start, end)$.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Premium day count input method}
+\paragraph{Parameter text} User selects the day count convention for premium accrual from a dropdown.
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{Premium day count default}
+\paragraph{Parameter text} If user doesn’t know, default day count = 30E/360.
+\paragraph{Explanation} Specifies the premium mechanics and default fallbacks.
+
+\item \textbf{Day count dropdown set}
+\paragraph{Parameter text} 30E/360; ACT/360; ACT/365F; 30/360 (US); ACT/ACT (ISDA); ACT/ACT (ICMA).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Premium amount formula (generic)}
+\paragraph{Parameter text} Premium cash due is computed actuarially based on the spread $s$ and the premium base.
+\paragraph{Explanation} Specifies the premium mechanics.
+\paragraph{Formulas} For any accrual window $[a,b)$:
+\[ \text{Premium}(a,b) = s \times \text{YearFrac}(a,b) \times (\text{premium base over } [a,b)) \]
+
+\item \textbf{Premium cash timing}
+\paragraph{Parameter text} Premium is paid on the payment date (no settlement lag).
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{Accrual end governs accrual stop}
+\paragraph{Parameter text} Premium accrues until Effective Accrual End Date; premium can still be paid after accrual ends.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Protection End Date input}
+\paragraph{Parameter text} User must input Protection End Date (required).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Legal Final Maturity Date input}
+\paragraph{Parameter text} User must input Legal Final Maturity Date (required).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Protection End date adjustment}
+\paragraph{Parameter text} Protection End is business-day adjusted using Modified Following + selected calendar(s).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Legal Final date adjustment}
+\paragraph{Parameter text} Legal Final is business-day adjusted using Modified Following + selected calendar(s).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Both key dates required}
+\paragraph{Parameter text} Protection End and Legal Final are both mandatory; missing/invalid $\rightarrow$ hard error.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Legal Final usage}
+\paragraph{Parameter text} Legal Final is a boundary/cap only.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Protection Start Date input}
+\paragraph{Parameter text} User must input Protection Start Date (required).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Protection Start date adjustment}
+\paragraph{Parameter text} Protection Start is business-day adjusted using Modified Following + selected calendar(s).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Coverage eligibility test (default-date based)}
+\paragraph{Parameter text} Boundaries are inclusive and use Default Date $\tau$ (not notice date) for eligibility.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+\paragraph{Formulas} A default is covered iff:
+\[ \text{ProtStart} \le \tau \le \text{ProtEnd} \]
+
+\item \textbf{Notice may occur after Protection End}
+\paragraph{Parameter text} If $\tau$ is covered, the write-down can occur at Notice Date even if $\text{Notice Date} > \text{ProtEnd}$ (still capped by Legal Final).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Notice lag definition}
+\paragraph{Parameter text} The notice lag is fixed and not user-configurable.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+\paragraph{Formulas} 
+\[ \text{NoticeDateRaw} = \tau + 1 \text{ calendar month} \]
+
+\item \textbf{Notice +1M month-add edge rule}
+\paragraph{Parameter text} If the resulting day doesn’t exist (e.g., Jan 31 + 1M), clamp to month-end (Feb 28/29).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Notice business-day adjustment}
+\paragraph{Parameter text} If NoticeDateRaw is not a business day, adjust using Preceding with the selected calendar(s).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Adjust-then-cap ordering}
+\paragraph{Parameter text} Adjust Legal Final using Modified Following. Adjust NoticeDateRaw using Preceding. Then apply the cap.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} 
+\[ \text{NoticeDate} = \min(\text{AdjustedNotice}, \text{AdjustedLegalFinal}) \]
+
+\item \textbf{Legal Final cap rule}
+\paragraph{Parameter text} Notice Date is never later than Legal Final after the above cap.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Write-down timing intraday}
+\paragraph{Parameter text} Write-down is effective at start-of-day on the (adjusted/capped) Notice Date.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Premium accrual vs Notice Date}
+\paragraph{Parameter text} Premium accrues up to but excluding Notice Date for affected exposures; the step-down happens at start-of-day Notice Date.
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{Premium stop date for defaulted exposure}
+\paragraph{Parameter text} Premium for the defaulted exposure stops at Notice Date (not at Default Date $\tau$).
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{Premium base during Default->Notice lag}
+\paragraph{Parameter text} From Default Date until Notice Date, premium is charged on the full pre-write-down notional.
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{Write-down amount formula (loan-level)}
+\paragraph{Parameter text} Determines the write-down on the Notice Date based on LGD rates.
+\paragraph{Explanation} Specifies the premium mechanics.
+\paragraph{Formulas} On Notice Date, write-down for a defaulted loan is:
+\[ WD_{\text{loan}} = EAD_{\text{loan}}(\tau) \times \max(LGD_{\text{recon}}, LGD_{\text{reg}}) \]
+
+\item \textbf{LGD sources}
+\paragraph{Parameter text} $lgd_{\text{recon}}$ and $lgd_{\text{reg}}$ are loan-level columns in the tape.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{LGD validation}
+\paragraph{Parameter text} Ensure rates are valid percentages.
+\paragraph{Explanation} Specifies the checks used to confirm internal consistency.
+\paragraph{Formulas} Hard validate for every loan: 
+\[ 0 \le lgd_{\text{recon}} \le 1 \quad \text{and} \quad 0 \le lgd_{\text{reg}} \le 1 \]
+
+\item \textbf{EAD timing for write-down}
+\paragraph{Parameter text} EAD is evaluated at Default Date $\tau$ and frozen.
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+\paragraph{Formulas} 
+\[ EAD \text{ at Notice} = EAD \text{ at Default} \]
+
+\item \textbf{EAD freeze at default}
+\paragraph{Parameter text} Once an obligor defaults, its loans’ balances freeze at Default Date (no further amortization after $\tau$).
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Premium within-period handling}
+\paragraph{Parameter text} Premium is computed by exact step-down integration at each Notice Date (piecewise-constant notional segments).
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{Notice Date adjustment consistency}
+\paragraph{Parameter text} The adjusted Notice Date is used consistently for both write-down timing and premium-stop/step-down timing.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Defaults after Protection End not covered}
+\paragraph{Parameter text} If $\tau > \text{Protection End}$, the default is not covered.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Protection End equality}
+\paragraph{Parameter text} If $\tau = \text{Protection End}$, it is covered (inclusive boundary).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Loan maturity beyond Legal Final}
+\paragraph{Parameter text} Allowed (loan maturity dates may extend past deal Legal Final; deal cashflows are still capped by Legal Final).
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Loan maturity date validity}
+\paragraph{Parameter text} Missing/invalid maturity date $\rightarrow$ hard error (unless explicitly excluded by rule ``$T \le \text{as-of}$ is ignored'').
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Tape currency assumption}
+\paragraph{Parameter text} $\text{Outstanding\_Principal\_Amount}$ is assumed to already be in deal currency. If not, hard error (no FX conversion in v1).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Starting notional source column}
+\paragraph{Parameter text} The tape contains $\text{Outstanding\_Principal\_Amount}$ as the as-of outstanding balance per loan.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Reference notional at as-of}
+\paragraph{Parameter text} Computed as the sum of all valid principal amounts.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} 
+\[ N_{\text{ref}} = \sum_{\text{loans}} \text{Outstanding\_Principal\_Amount} \]
+
+\item \textbf{Tranche sizing input}
+\paragraph{Parameter text} User inputs $\text{tranche\_percentage}$ (e.g., 6\%), meaning tranche size as a \% of $N_{\text{ref}}$.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Our holding input}
+\paragraph{Parameter text} User inputs $\text{our\_percentage}$, meaning our participation/holding share of the tranche.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Our starting notional / premium base at as-of}
+\paragraph{Parameter text} Calculated by scaling reference notional by our ownership shares.
+\paragraph{Explanation} Specifies the premium mechanics.
+\paragraph{Formulas} 
+\[ N_0 = N_{\text{ref}} \times \text{tranche\_percentage} \times \text{our\_percentage} \]
+
+\item \textbf{Loan-level write-down scaling to our position (v1)}
+\paragraph{Parameter text} Write-downs are scaled proportionally to our tranche holding.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+\paragraph{Formulas} 
+\[ WD_{\text{ours}} = \sum_{\text{defaulted\_loans}} WD_{\text{loan}} \times \text{tranche\_percentage} \times \text{our\_percentage} \]
+
+\item \textbf{Notional floor / cap}
+\paragraph{Parameter text} Cumulative write-downs cannot exceed $N_0$.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} Remaining tranche notional:
+\[ N(t) = \max(N_0 - \text{CumWD}(t), 0) \]
+
+\item \textbf{Position termination at zero}
+\paragraph{Parameter text} If $N(t)=0$, the position is dead; it cannot go negative.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Premium stops when notional hits zero}
+\paragraph{Parameter text} If a Notice Date write-down causes $N(t)$ to hit 0, premium accrual stops immediately from that Notice Date start-of-day onward.
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{No ``accrued from past''}
+\paragraph{Parameter text} We do not compute or assume any accrual before as-of. 
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} First accrual window in valuation begins at:
+\[ t_{\text{start,eff}} = \max(\text{as-of}, \text{Accrual Start}) \]
+
+\item \textbf{First coupon proration scope}
+\paragraph{Parameter text} Only the first coupon after valuation is prorated from $t_{\text{start,eff}}$ to the next payment date; later coupons accrue payment-to-payment.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Payment dates strictly future}
+\paragraph{Parameter text} Only payment dates with $\text{date} > \text{as-of}$ are included for PV.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Legal Final cap on notice/write-down}
+\paragraph{Parameter text} If Notice Date (after +1M and adjustments) would exceed Legal Final, it is capped to Legal Final (after adjust-then-cap rule).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{EAD projection method}
+\paragraph{Parameter text} Rule-based using amortization type + maturity date from the tape.
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Amortization type mapping (tape -> model)}
+\paragraph{Parameter text} Bullet $\rightarrow$ bullet; n/a $\rightarrow$ bullet; until further notice $\rightarrow$ bullet; Amortisation $\rightarrow$ linear rule; Annuity $\rightarrow$ same linear rule.
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Linear balance rule for Amortisation/Annuity}
+\paragraph{Parameter text} Decreases principal uniformly to zero.
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+\paragraph{Formulas} For as-of balance $B_0$, as-of date $t_0$, maturity $T$:
+\[ B(t) = B_0 \times \max\left(0, 1 - \frac{t - t_0}{T - t_0}\right) \]
+
+\item \textbf{Linear rule time basis}
+\paragraph{Parameter text} Calculation uses days.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} Use calendar-day ratio:
+\[ \frac{t - t_0}{T - t_0} = \frac{\text{days}(t)-\text{days}(t_0)}{\text{days}(T)-\text{days}(t_0)} \]
+
+\item \textbf{Bullet balance rule}
+\paragraph{Parameter text} Balance remains constant until maturity.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} 
+\[ B(t) = B_0 \quad \text{for } t < T, \quad \text{and} \quad B(t)=0 \quad \text{for } t \ge T \]
+
+\item \textbf{Loan maturity date adjustment}
+\paragraph{Parameter text} Loan maturity $T$ is unadjusted calendar date (no business-day adjustment).
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Maturity timing intraday}
+\paragraph{Parameter text} Balance drops to 0 at start-of-day on maturity date $T$.
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Exclude matured loans at/ before as-of}
+\paragraph{Parameter text} If a loan has $T \le \text{as-of date}$, ignore it (exclude from forward valuation).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Exclude zero-balance loans}
+\paragraph{Parameter text} If $\text{Outstanding\_Principal\_Amount} = 0$ at as-of, exclude the loan from forward valuation.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Default vs maturity}
+\paragraph{Parameter text} If simulated obligor default time $\tau > T$ for a given loan, treat that loan as effectively no default (out of risk set).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Maturity reduces premium base}
+\paragraph{Parameter text} Loan amortization/maturity reduces the portfolio balance and therefore reduces tranche notional/premium base over time (even without defaults).
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Amortization included in premium base}
+\paragraph{Parameter text} Premium base reflects projected balances $B(t)$ over time and steps down at Notice Dates.
+\paragraph{Explanation} Specifies how exposure-at-default evolves over time.
+
+\item \textbf{Event-date evaluation}
+\paragraph{Parameter text} Premium base/EAD evolution is evaluated on event dates, not daily.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Event-date set includes}
+\paragraph{Parameter text} At minimum include as-of date; payment dates; notice dates; accrual end date; loan maturity dates.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Default time representation}
+\paragraph{Parameter text} Simulated default time $\tau$ is treated as a calendar date (date-only; no time-of-day).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{tau -> date mapping}
+\paragraph{Parameter text} Use the survival-curve implementation’s native time basis when converting/inverting to dates (``curve-native'').
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Curve horizon assumption}
+\paragraph{Parameter text} Survival/hazard curves are guaranteed to extend beyond the SRT horizon (Protection End and Legal Final), so no extrapolation rule is needed.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Marginal assignment by rating (loan-level)}
+\paragraph{Parameter text} Each loan is assigned a rating bucket (via mapping) used in obligor curve selection.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Obligor grouping key}
+\paragraph{Parameter text} Group loans by $\text{Debtor\_ID}$ (obligor-level modelling).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Within-obligor linkage}
+\paragraph{Parameter text} If obligor defaults, all loans under that $\text{Debtor\_ID}$ default together (shared $\tau$).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Default is absorbing}
+\paragraph{Parameter text} An obligor can default at most once; no cure/re-default.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Worst-rating obligor curve}
+\paragraph{Parameter text} Each obligor uses the survival curve corresponding to the worst rating among its loans (replaces earlier weighted approach).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Worst-rating ordering}
+\paragraph{Parameter text} Use a fixed standard rating ordering (AAA best $\rightarrow$ ... $\rightarrow$ D worst).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Internal rating source column}
+\paragraph{Parameter text} Loan tape contains $\text{Internal\_Rating}$ used for mapping to external rating bucket.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Internal rating mapping}
+\paragraph{Parameter text} $\text{Internal\_Rating}$ is translated to a rating bucket using a provided mapping table (left $\rightarrow$ right column).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Internal\_Rating exact-match rule}
+\paragraph{Parameter text} $\text{Internal\_Rating}$ must match a key in the mapping table exactly; otherwise hard error.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Rating label normalization}
+\paragraph{Parameter text} After mapping, normalize rating labels for lookup (trim whitespace, standardize case/format like ``AA-'').
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Rating coverage requirement}
+\paragraph{Parameter text} Mapped rating bucket must exist in the CDS curve set; otherwise hard error.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Global data-quality stance (general)}
+\paragraph{Parameter text} Missing/invalid/erroneous required data $\rightarrow$ hard error (no silent fallbacks).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Debtor\_ID missing}
+\paragraph{Parameter text} Missing $\text{Debtor\_ID} \rightarrow$ hard error (covered by global rule).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{No explicit required-columns list}
+\paragraph{Parameter text} The written spec does not maintain a ``minimum required columns'' list; the implementation throws hard errors when referenced fields are missing/invalid.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{PD column for replenishment tests}
+\paragraph{Parameter text} Tape contains a loan-level column $PD$ interpreted as 1-year PD in $[0,1]$, used for WAPD constraints.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{PD validation (implicit by global rule)}
+\paragraph{Parameter text} Missing/invalid PD values $\rightarrow$ hard error.
+\paragraph{Explanation} Specifies the checks used to confirm the implementation is internally consistent.
+
+\item \textbf{Default event definition (v1)}
+\paragraph{Parameter text} Default is modelled as a single generic hazard-driven event; no bankruptcy/failure-to-pay subtypes.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Protection Start is user input}
+\paragraph{Parameter text} User inputs Protection Start Date.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Protection Start adjustment}
+\paragraph{Parameter text} Apply Modified Following + selected calendar(s) to Protection Start.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Coverage window uses default date}
+\paragraph{Parameter text} Based on inclusive boundaries using default dates.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+\paragraph{Formulas} Covered iff:
+\[ \text{ProtStart} \le \tau \le \text{ProtEnd} \]
+
+\item \textbf{Notice after ProtEnd allowed}
+\paragraph{Parameter text} Covered default $\tau$ may have $\text{NoticeDate} > \text{ProtEnd}$; write-down still recognized (capped by Legal Final).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{NoticeDate default-lag stays fixed}
+\paragraph{Parameter text} The raw notice date is a fixed $+1$ month lag.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+\paragraph{Formulas} 
+\[ \text{NoticeDateRaw} = \tau + 1 \text{ calendar month} \]
+
+\item \textbf{Notice date adjustment method}
+\paragraph{Parameter text} Use Preceding with the selected joint calendar(s).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Adjust then cap (restated)}
+\paragraph{Parameter text} Adjust Notice and Legal Final first, then cap the dates.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} 
+\[ \text{Notice} \le \text{Legal Final} \]
+
+\item \textbf{Write-down effective timing}
+\paragraph{Parameter text} Write-down effective at start-of-day Notice Date; premium excludes Notice Date.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Premium stop on notice (restated)}
+\paragraph{Parameter text} Premium continues until Notice Date (exclusive), not until default date.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Premium base unchanged until notice}
+\paragraph{Parameter text} Premium accrues on the full pre-write-down notional until Notice Date.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Copula simulation unit}
+\paragraph{Parameter text} One latent variable and one default time per obligor ($\text{Debtor\_ID}$).
+\paragraph{Explanation} Specifies the dependency structure across obligors.
+
+\item \textbf{One-factor draw per path}
+\paragraph{Parameter text} For each MC path, draw one systematic factor $Y \sim N(0,1)$.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Idiosyncratic draws}
+\paragraph{Parameter text} For each obligor $i$ in a path, draw $\epsilon_i \sim N(0,1)$ independent across obligors conditional on $Y$.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Latent variable formula}
+\paragraph{Parameter text} Defines the structure of the latent variable.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} 
+\[ X_i = \sqrt{\rho} \cdot Y + \sqrt{1-\rho} \cdot \epsilon_i \]
+
+\item \textbf{rho input}
+\paragraph{Parameter text} User inputs a single constant $\rho$ applied to all obligors.
+\paragraph{Explanation} Specifies the dependency structure across obligors.
+
+\item \textbf{rho validation}
+\paragraph{Parameter text} Ensure correlation is strictly bounded.
+\paragraph{Explanation} Specifies the dependency structure across obligors and required checks.
+\paragraph{Formulas} Hard validate:
+\[ 0 \le \rho < 1 \]
+otherwise hard error.
+
+\item \textbf{Uniform mapping from latent variable}
+\paragraph{Parameter text} Convert latent draws using standard normal CDF.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+\paragraph{Formulas} 
+\[ U_i = \Phi(X_i) \]
+
+\item \textbf{Default-time condition for inversion}
+\paragraph{Parameter text} Maps uniform variables to default times based on survival probability $S$.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+\paragraph{Formulas} Compute $\tau_i$ by solving:
+\[ S(\tau_i) = U_i \]
+
+\item \textbf{Default-time inversion method}
+\paragraph{Parameter text} Analytic inversion using your piecewise-constant forward hazards $\lambda_k$ by tenor interval (no numerical root finding).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Path computation style}
+\paragraph{Parameter text} Vectorized per path—draw $Y$, draw all $\epsilon_i$, compute all $X_i, U_i, \tau_i$.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Monte Carlo RNG type}
+\paragraph{Parameter text} Pseudo-random RNG (standard random numbers).
+\paragraph{Explanation} Specifies the dependency structure across obligors.
+
+\item \textbf{Random seed convention}
+\paragraph{Parameter text} Always use a fixed default seed (no user seed input).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Monte Carlo path count}
+\paragraph{Parameter text} Fixed default number of paths = 50,000 (no user control).
+\paragraph{Explanation} Specifies the dependency structure across obligors.
+
+\item \textbf{Variance reduction}
+\paragraph{Parameter text} None (no antithetic variates, no Sobol).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{No coverage after Protection End}
+\paragraph{Parameter text} Defaults with $\tau > \text{Protection End}$ are not covered (restated as protection cutoff rule).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Protection End boundary inclusive}
+\paragraph{Parameter text} If $\tau = \text{Protection End}$, it is covered (restated).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Replenishment exists}
+\paragraph{Parameter text} Deal has replenishment = Yes.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Replenishment end date input}
+\paragraph{Parameter text} User inputs Replenishment End Date.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Replenishment availability test}
+\paragraph{Parameter text} If $\text{Replenishment End Date} \le \text{as-of date} \rightarrow$ treat as no replenishment remaining (skip replenishment logic).
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Replenishment modelling approach}
+\paragraph{Parameter text} Synthetic replenishment up to cap while enforcing constraints (no candidate-loan selection).
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Replenishment cap definition}
+\paragraph{Parameter text} The cap represents the maximum pool boundary allowed for top-ups.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+\paragraph{Formulas} 
+\[ \text{Cap} = N_{\text{ref}} = \sum \text{Outstanding\_Principal\_Amount} \]
+
+\item \textbf{Replenishment timing}
+\paragraph{Parameter text} Replace exposure lost due to amortization/maturity; do not replace exposure lost due to defaults.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Replenishment granularity}
+\paragraph{Parameter text} Apply replenishment on the event-date grid (not daily), topping up for amort/maturity reductions since the prior event date.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Defaulted claims not replenished}
+\paragraph{Parameter text} Defaulted reference claims are not replaced and are excluded from pool metrics starting at Notice Date.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{Synthetic replenishment characteristics}
+\paragraph{Parameter text} Replenished exposure is assumed to match the current non-defaulted pool characteristics at that time (neutral top-up).
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Partial replenishment allowed}
+\paragraph{Parameter text} If constraints would be violated by topping up fully, replenish partially up to the maximum allowed.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Binding constraint rule}
+\paragraph{Parameter text} Compute the maximum permissible top-up under each constraint and take the minimum (tightest constraint binds).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{WAPD PD source}
+\paragraph{Parameter text} Use loan-level column $PD$ (1-year PD) for WAPD calculations.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{WAPD formula}
+\paragraph{Parameter text} Uses current projected balances and non-defaulted pool.
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective for the deal.
+\paragraph{Formulas} 
+\[ \text{WAPD}(t) = \frac{\sum_{i \in \text{non-defaulted}} B_i(t) \cdot PD_i}{\sum_{i \in \text{non-defaulted}} B_i(t)} \]
+
+\item \textbf{WAPD weights}
+\paragraph{Parameter text} Use current projected balance $B_i(t)$ at the replenishment event date (not as-of weights).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Exclude defaulted claims timing (for metrics)}
+\paragraph{Parameter text} A loan is treated as defaulted for pool metrics starting Notice Date (start-of-day).
+\paragraph{Explanation} Specifies when a simulated default becomes economically effective.
+
+\item \textbf{WAPD no-deterioration baseline}
+\paragraph{Parameter text} Compare post-replenishment WAPD to the same-date pre-replenishment pool WAPD (after amort/maturity and excluding defaulted claims).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Guidelines table exists}
+\paragraph{Parameter text} General portfolio guidelines are represented as a configurable table of constraints (user can change numeric thresholds; ``country'' refers to issuer bank’s country conceptually).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Guidelines enforcement}
+\paragraph{Parameter text} All guideline rows are hard constraints (breach blocks/limits replenishment via the binding constraint rule).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Guidelines application under synthetic replenishment}
+\paragraph{Parameter text} Evaluate constraints on the post-top-up pool where replenished exposure inherits the same characteristics as the pre-top-up non-defaulted pool.
+\paragraph{Explanation} Specifies how the pool is topped up during the replenishment period.
+
+\item \textbf{Portfolio guideline parameters are user-editable}
+\paragraph{Parameter text} The model supports user-edited numeric thresholds for guideline rows (e.g., country limits, sector limits, maturity/WAL limits, PD limits, turnover/rating floors), applied consistently as hard constraints. 
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Valuation target — full junior tranche ownership}
+\paragraph{Parameter text} We value 100\% of the most junior tranche (full position, not a participation). No scaling by an $\text{our\_percentage}$ applies in Sections 6–8.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Loss allocation — junior-first until exhausted}
+\paragraph{Parameter text} All portfolio credit losses are allocated to the junior tranche first until the tranche is fully written down (tranche is 'dead' at 0 outstanding). This is implemented as an equity/first-loss bucket (attachment effectively $A = 0$).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Tranche outstanding notional definition}
+\paragraph{Parameter text} Let $N_{\text{sched}}(t)$ be the scheduled tranche notional (before defaults) and $\text{CumLoss}(t)$ cumulative portfolio credit loss amount (booked at Notice Dates). 
+\paragraph{Explanation} Incremental tranche loss at an event time $t$ is defined as below.
+\paragraph{Formulas}
+\begin{align*}
+N_{tr}(t) &= \max(N_{\text{sched}}(t) - \text{CumLoss}(t), 0) \\
+\Delta \text{TrLoss}(t) &= \min(\Delta \text{Loss}(t), N_{tr}(t-))
+\end{align*}
+
+\item \textbf{Scheduled tranche notional tracking}
+\paragraph{Parameter text} Define $\text{PoolBal}_{\text{sched}}(t)$ as the scheduled/performing pool balance from the EAD engine (contractual amortization/maturity plus replenishment top-ups, and plus/minus prepayments if enabled), but not reduced mechanically by defaults. Defaults affect tranche only through $\text{CumLoss}(t)$.
+\paragraph{Explanation} Defines scheduled pool balance relationships.
+\paragraph{Formulas}
+\begin{align*}
+\alpha &= \frac{N_{\text{sched}}(0)}{\text{PoolBal}_{\text{sched}}(0)} \\
+N_{\text{sched}}(t) &= \alpha \times \text{PoolBal}_{\text{sched}}(t)
+\end{align*}
+
+\item \textbf{Cumulative loss definition}
+\paragraph{Parameter text} Loss is recognized into $\text{CumLoss}$ at Notice Date (Default Date + 1 calendar month, with business-day adjustment), with write-down effective at Notice Date start-of-day. 
+\paragraph{Explanation} Defines how loss amounts are determined using EAD frozen at default date $\tau_i$.
+\paragraph{Formulas}
+\[ \text{Loss}_i = EAD_i(\tau_i) \times LGD_i \]
+
+\item \textbf{Premium accrual base and intra-quarter segmentation}
+\paragraph{Parameter text} Premium accrues on the tranche outstanding notional, with exact piecewise integration within each quarter. For an accrual period $[T_k, T_{k+1}]$, split at any Notice Dates $t_N$ that fall inside the period. Accrue premium on each sub-interval $[u_m, u_{m+1}]$ using the prevailing outstanding notional $N_{tr}(u_m)$, where notional steps down at Notice Date start-of-day. Day count for premium accrual is ACT/360.
+\paragraph{Explanation} Specifies the premium mechanics.
+
+\item \textbf{Premium payment timing}
+\paragraph{Parameter text} Premium is paid in arrears at the period end date (typically quarter-end). 
+\paragraph{Explanation} Specifies the premium mechanics.
+\paragraph{Formulas} Cashflow date for premium in $[T_k, T_{k+1}]$ is $T_{k+1}$.
+
+\item \textbf{Write-down cashflow representation}
+\paragraph{Parameter text} No external protection payment is assumed at default. Instead, each tranche write-down is represented as a negative note/NAV cashflow at Notice Date start-of-day.
+\paragraph{Explanation} Specifies cashflow behavior for funded SPV structure.
+\paragraph{Formulas}
+\[ CF_{\text{wd}}(t_N) = -\Delta \text{TrLoss}(t_N) \]
+
+\item \textbf{Redemption cashflow at Legal Final Maturity}
+\paragraph{Parameter text} At Legal Final Maturity (LFM), repay remaining outstanding principal.
+\paragraph{Explanation} Specifies end-of-deal cashflows.
+\paragraph{Formulas}
+\[ CF_{\text{red}}(T_{\text{LFM}}) = +N_{tr}(T_{\text{LFM}}-) \]
+
+\item \textbf{Fees and expenses}
+\paragraph{Parameter text} Fees/expenses (SPV admin, trustee, etc.) are ignored in v1.
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Deal-level call/unwind}
+\paragraph{Parameter text} Deal-level call/unwind features are ignored in v1 (deal runs to Legal Final Maturity).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\item \textbf{Stochastic loan prepayment (CPR) toggle}
+\paragraph{Parameter text} Model supports a user toggle $\text{enable\_prepayment} \in \{0,1\}$. If enabled, user inputs annual CPR ($CPR_{\text{annual}} \in [0,1]$). Each quarter, for each live loan, draw $U \sim \text{Uniform}(0,1)$. If $U < p_q$, the loan prepays (remaining outstanding principal becomes 0). Within the replenishment period, prepayment-driven reductions are eligible for top-off (defaults are not).
+\paragraph{Explanation} Converts annual CPR to quarterly probability.
+\paragraph{Formulas} 
+\[ p_q = 1 - (1 - CPR_{\text{annual}})^{1/4} \]
+
+\item \textbf{Discounting curve usage}
+\paragraph{Parameter text} Use a single continuous discount curve $DF_{\text{ccy}}(\text{date})$ per deal currency for all cashflows. Discount factors are queried by date (curve’s own internal basis).
+\paragraph{Explanation} Specifies how cashflows are discounted to as-of.
+
+\item \textbf{PV computation}
+\paragraph{Parameter text} Computations are executed pathwise and then averaged over all Monte Carlo paths $\omega$.
+\paragraph{Explanation} Specifies calculation logic for NPV.
+\paragraph{Formulas}
+\begin{align*}
+NPV(\omega) &= PV_{\text{prem}}(\omega) + PV_{\text{wd}}(\omega) + PV_{\text{red}}(\omega) \\
+E[NPV] &\approx \frac{1}{N} \sum_{\omega} NPV(\omega)
+\end{align*}
+
+\item \textbf{Output pack (pricing)}
+\paragraph{Parameter text} Report scenario-averaged outputs alongside CleanPrice and DirtyPrice per 100 of $N_{tr}(\text{as-of})$, and $\text{AccruedPremium}(\text{as-of})$.
+\paragraph{Explanation} Required breakdown for outputs.
+\paragraph{Formulas} 
+\[ PV_{\text{premium}}, \quad PV_{\text{write\_down}}, \quad PV_{\text{redemption}}, \quad NPV_{\text{MTM}} \]
+
+\item \textbf{Dead tranche reporting convention}
+\paragraph{Parameter text} If $N_{tr}(\text{as-of}) = 0$, set PV legs from as-of onward to 0.
+\paragraph{Explanation} Prevents division by zero or NaN reporting for exhausted tranches.
+\paragraph{Formulas} 
+\[ NPV_{\text{MTM}} = 0, \quad \text{AccruedPremium} = 0, \quad \text{CleanPrice} = 0, \quad \text{DirtyPrice} = 0 \]
+
+\item \textbf{Accrued premium cutoff at as-of}
+\paragraph{Parameter text} As-of is treated as start-of-day. Accrued premium is computed from last premium payment date $t_{\text{prev}}$ up to as-of $t_0$, excluding the as-of day, with breakpoints $\{t_{\text{prev}}, \text{any Notice Dates in } (t_{\text{prev}}, t_0), t_0\}$.
+\paragraph{Explanation} Details accrued baseline.
+\paragraph{Formulas}
+\[ \text{Accrued} = s \times \sum_m \text{YearFrac}(u_m, u_{m+1}) \times N_{tr}(u_m) \]
+
+\item \textbf{Par spread solver included (definition)}
+\paragraph{Parameter text} Model includes a par spread solver. Par spread $s^*$ is defined as the spread that makes MTM NPV zero.
+\paragraph{Explanation} Mathematical root formulation.
+\paragraph{Formulas}
+\[ NPV_{\text{MTM}}(s^*) = 0 \]
+
+\item \textbf{Par spread method (closed-form PV01)}
+\paragraph{Parameter text} Because NPV is linear in spread, solve par spread in closed form using PV01. Use consistent units (e.g., if PV01 is per 1bp, $s^*$ is in bps).
+\paragraph{Explanation} Direct algebraic resolution.
+\paragraph{Formulas}
+\begin{align*}
+NPV(s) &= s \times PV01 - PV_{wd} + PV_{red} \\
+s^* &= \frac{PV_{wd} - PV_{red}}{PV01}
+\end{align*}
+
+\item \textbf{Validation pack (v1)}
+\paragraph{Parameter text} Implement standard validation outputs: (i) bounds: tranche loss $\le$ scheduled tranche notional; $N_{tr}(t) \ge 0$; premium stops after tranche is dead. (ii) monotonicity: NPV increases with spread. (iii) Monte Carlo convergence. (iv) loss distribution: Expected Loss, VaR(99), ES(99). (v) reconciliation: expected premium / write-down / redemption by date table.
+\paragraph{Explanation} Specifies the checks used to confirm stability.
+
+\item \textbf{Sensitivity analysis}
+\paragraph{Parameter text} Sensitivity grids are deferred (not required in v1).
+\paragraph{Explanation} Defines a required parameter or rule that must be implemented exactly as stated.
+
+\end{enumerate}
+
+\end{document}
