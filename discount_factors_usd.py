@@ -11,9 +11,9 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import pandas as pd
 
 DateLike = Union[date, datetime, str, pd.Timestamp]
+_CURVE_CACHE: Optional["DiscountCurve"] = None
 
 
 #%% Basic helpers
@@ -257,19 +257,26 @@ def load_discount_curve_from_excel(
     )
 
 
-curve = load_discount_curve_from_excel("usd_quotes.xlsx", "Discount Function")
+def _get_or_load_curve(
+    file_path: str = "usd_quotes.xlsx",
+    sheet_name: str = "Discount Function",
+) -> DiscountCurve:
+    global _CURVE_CACHE
+    if _CURVE_CACHE is None:
+        _CURVE_CACHE = load_discount_curve_from_excel(file_path=file_path, sheet_name=sheet_name)
+    return _CURVE_CACHE
 
 
 def get_discount_factor(q_date: DateLike) -> float:
     """Return discount factor for the given date (no extrapolation)."""
+    curve = _get_or_load_curve()
     return curve.discount_factor(q_date)
 
-#%%
-# Run:
-plot_discount_curve(curve)
 
-#%% Usage example
-query_date = "2034-01-30"
-df_value = get_discount_factor(query_date)
-print(f"DF({query_date}) = {df_value:.10f}")
+if __name__ == "__main__":
+    curve = _get_or_load_curve()
+    plot_discount_curve(curve)
+    query_date = "2034-01-30"
+    df_value = get_discount_factor(query_date)
+    print(f"DF({query_date}) = {df_value:.10f}")
 

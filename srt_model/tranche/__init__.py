@@ -1,0 +1,2 @@
+"""Tranche-level cashflow mechanics."""
+

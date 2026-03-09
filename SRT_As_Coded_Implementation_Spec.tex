@@ -1,0 +1,212 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+
+\title{SRT Valuation Model - As-Coded Implementation Specification}
+\date{2026-02-28}
+
+\begin{document}
+\maketitle
+
+\section*{Purpose}
+This document describes the \textbf{actual current behavior of the codebase} in this repository. It is intended as an implementation-faithful companion to the locked-parameter ground-truth specification.
+
+\section*{Scope and conventions}
+\begin{itemize}
+  \item Reference implementation root: \texttt{srt\_model/} with runtime config in \texttt{srt\_model\_config.py}.
+  \item Primary entrypoint: \texttt{python3 -m srt\_model.cli.run\_example}.
+  \item All formulas and rules below describe code behavior, even where simplified versus legal deal docs.
+\end{itemize}
+
+\begin{enumerate}[label=\arabic*),leftmargin=*,align=left]
+
+\item \textbf{Valuation anchor}: Valuation uses \texttt{AS\_OF\_DATE} parsed from config.
+\item \textbf{Required config fields}: Missing required values trigger warning lines and hard error (\texttt{ConfigValidationError}).
+\item \textbf{Required core inputs}: Tape path/sheet, core dates, premium spread/day count, issuer country, tranche live notional inputs, and \texttt{OUR\_PERCENTAGE}.
+\item \textbf{Calendar universe}: Allowed base calendars are TARGET/TARGET2, Sweden, UK, Germany, France, Spain, Switzerland.
+\item \textbf{Joint calendars}: If enabled, business day requires business day in all selected calendars.
+\item \textbf{Calendar validation}: Unsupported country keys and empty joint list (when joint enabled) are hard errors.
+\item \textbf{Business day definition}: Weekend or holiday is non-business day.
+\item \textbf{Payment/protection/legal date adjustment}: Modified Following.
+\item \textbf{Notice date adjustment}: Preceding, then capped by adjusted legal final date.
+\item \textbf{Holiday engine}: \texttt{holidays} package with memoized calendar and business-day checks for performance.
+
+\item \textbf{Tape loading}: Portfolio tape is loaded from the configured Excel file and sheet.
+\item \textbf{Deal currency rule}: \texttt{Loan\_Currency} must be single-valued across active rows.
+\item \textbf{Currency support}: Only EUR and USD are supported.
+\item \textbf{Mixed-currency handling}: Mixed currencies are hard error (no FX layer).
+\item \textbf{Required tape columns}: Explicit required column set is enforced in code.
+\item \textbf{Row filtering}: Loans with \(\text{Maturity\_Date} \le \text{as-of}\) are excluded.
+\item \textbf{Zero-balance filtering}: Loans with zero \texttt{Outstanding\_Principal\_Amount} are excluded.
+\item \textbf{PD/LGD validation}: \texttt{PD}, \texttt{LGD\_reg}, \texttt{LGD\_econ} must each lie in \([0,1]\), else hard error.
+\item \textbf{Amortization blank handling}: Blank \texttt{Amortisation\_Type} is mapped to Bullet (user rule).
+\item \textbf{Turnover parsing}: Buckets like ``less than 50m'', ``125m - 250m'', ``more than 500m'' are parsed to numeric lower bounds.
+
+\item \textbf{Internal rating normalization}: Internal rating keys are normalized to one-decimal strings (example: \(2.2 \rightarrow\) ``2.2'').
+\item \textbf{Internal-to-external mapping}: Exact key match in \texttt{INTERNAL\_TO\_EXTERNAL\_RATING}; missing key is hard error.
+\item \textbf{External label normalization}: External ratings are uppercased and trimmed.
+\item \textbf{Plus/minus handling}: Survival lookup removes \(+\) and \(-\) suffixes.
+\item \textbf{Low-grade collapse rule}: \(\{CC, C, D\}\) collapse to \(CCC\) for survival lookup.
+\item \textbf{Obligor grouping}: Loans grouped by \texttt{Debtor\_ID}.
+\item \textbf{Obligor curve key}: Each debtor uses worst loan-level external rating by fixed ordering \(D \rightarrow \cdots \rightarrow AAA\).
+\item \textbf{Coverage validation}: All debtor curve keys must exist in loaded survival curves.
+
+\item \textbf{Survival data source}: Survival and hazard matrices are loaded from configured CSV files by currency.
+\item \textbf{Curve matrix integrity}: Hazard and survival matrices must share the same rating index.
+\item \textbf{Hazard model}: Piecewise-constant forward hazard per tenor interval.
+\item \textbf{Survival function}: \(S(t)=\exp(-H(t))\) with interval hazard accumulation.
+\item \textbf{Survival horizon}: Querying \(S(t)\) beyond max tenor is hard error.
+\item \textbf{Default-time inversion}: Analytic inversion solves \(S(\tau)=U\), no root finder.
+\item \textbf{Beyond-horizon defaults}: If implied hazard exceeds last cumulative hazard, \(\tau=\infty\).
+
+\item \textbf{Discount curves}: Currency-specific adapters call existing EUR/USD discount modules.
+\item \textbf{Discounting leg consistency}: Same \(DF(\text{date})\) is applied to premium, write-down, and redemption legs.
+\item \textbf{No discount extrapolation policy}: EUR loader explicitly disallows extrapolation; USD loader also operates on in-range dates only.
+
+\item \textbf{Copula model}: One-factor Gaussian copula with
+\[
+X_i=\sqrt{\rho}\,Y+\sqrt{1-\rho}\,\varepsilon_i,\quad U_i=\Phi(X_i).
+\]
+\item \textbf{Rho validation}: \(\rho\in[0,1)\), else hard error.
+\item \textbf{Randomness}: Pseudo-random \texttt{numpy.default\_rng} with fixed seed from config.
+\item \textbf{Uniform clipping}: \(U\) is clipped to \([10^{-15},1]\) for numeric safety.
+\item \textbf{Default-time matrix}: Generated per path and obligor from debtor curve keys.
+
+\item \textbf{Effective accrual start}: 
+\[
+t_{\text{start,eff}}=\max(\text{as-of},\text{Accrual Start Date}).
+\]
+\item \textbf{Schedule generation rule}: Start from first payment date strictly after \(t_{\text{start,eff}}\), then add \(+3\) months.
+\item \textbf{EOM behavior}: Month stepping uses explicit \texttt{EOM\_ON} toggle.
+\item \textbf{Final stub}: If \texttt{ACCRUAL\_END\_DATE} is not on schedule, it is appended as a final stub date.
+\item \textbf{Future cashflow filter}: Only payment dates strictly \(>\) as-of remain in valuation schedule.
+\item \textbf{As-of previous payment date}: Computed by back/forward quarterly roll with adjusted dates for accrued-premium calculation.
+\item \textbf{Notice lag rule}: \(\text{NoticeRaw}=\tau+1\) calendar month with day clamp logic.
+\item \textbf{Notice cap rule}: \(\text{NoticeDate}=\min(\text{Adjusted Notice},\text{Adjusted Legal Final})\).
+\item \textbf{Coverage window}: Defaults are covered iff
+\[
+\text{ProtStart}\le \tau_{\text{date}} \le \text{ProtEnd}.
+\]
+
+\item \textbf{Tau-to-date mapping}: Year-space \(\tau\) converts to date using
+\[
+\text{tau\_days}=\left\lfloor \max(0,\tau)\cdot \texttt{TAU\_YEAR\_BASIS\_DAYS}\right\rfloor.
+\]
+\item \textbf{Non-finite tau}: \(\tau=\infty\) or NaN is ignored (no covered default event).
+\item \textbf{Amortization mapping}: Bullet/n/a/until-further-notice \(\rightarrow\) bullet; amortisation/annuity \(\rightarrow\) linear.
+\item \textbf{Projected bullet balance}: \(B(t)=B_0\) for \(t< T\), \(B(t)=0\) for \(t\ge T\).
+\item \textbf{Projected linear balance}: For \(t\in(\text{as-of},T)\),
+\[
+B(t)=B_0\max\left(0,1-\frac{t-\text{as-of}}{T-\text{as-of}}\right).
+\]
+\item \textbf{Prepayment-adjusted balance}: If prepayment date exists and \(t\ge\) prepayment date, balance is zero.
+\item \textbf{EAD at default}: Uses projected balance at default date, then remains frozen through notice lag.
+\item \textbf{Loan loss formula}: For covered defaults,
+\[
+\text{Loss}_{\text{loan}}=EAD(\tau)\cdot \max(LGD_{\text{econ}},LGD_{\text{reg}}).
+\]
+\item \textbf{Loss booking time}: Losses are aggregated at notice dates.
+
+\item \textbf{Tranche percentage derivation}: 
+\[
+\text{tranche\_pct}=\frac{\texttt{CURRENT\_TRANCHE\_VALUE}}{\texttt{CURRENT\_SRT\_TOTAL\_VALUE}}.
+\]
+\item \textbf{Tranche input validation}: Denominator and numerator must be \(>0\), and numerator cannot exceed denominator.
+\item \textbf{Reference notional}: \(N_{\text{ref}}\) is sum of included loan principals.
+\item \textbf{Scheduled tranche notional at as-of}:
+\[
+N_{\text{sched}}(0)=N_{\text{ref}}\cdot \text{tranche\_pct}.
+\]
+\item \textbf{Scale factor}: 
+\[
+\alpha=\frac{N_{\text{sched}}(0)}{PoolBal_{\text{sched}}(0)}.
+\]
+\item \textbf{Scheduled tranche notional path}: 
+\[
+N_{\text{sched}}(t)=\alpha\cdot PoolBal_{\text{sched}}(t).
+\]
+\item \textbf{Outstanding tranche notional}: 
+\[
+N_{\text{tr}}(t)=\max(N_{\text{sched}}(t)-CumLoss(t),0).
+\]
+\item \textbf{Incremental tranche loss}: 
+\[
+\Delta TrLoss(t)=\min(\Delta Loss(t),N_{\text{tr}}(t^-)).
+\]
+\item \textbf{Write-down cashflow sign}: \(CF_{\text{wd}}(t)=-\Delta TrLoss(t)\).
+\item \textbf{Redemption cashflow}: \(CF_{\text{red}}(T_{\text{LFM}})=N_{\text{tr}}(T_{\text{LFM}}^-)\) if \(T_{\text{LFM}}>\) as-of.
+
+\item \textbf{Premium accrual segmentation}: For each payment period, split \([T_k,T_{k+1})\) at notice dates and accrue piecewise.
+\item \textbf{Premium accrual formula}: For each sub-interval \([a,b)\),
+\[
+\text{Prem}(a,b)=s\cdot \text{YearFrac}(a,b)\cdot N_{\text{tr}}(a).
+\]
+\item \textbf{Supported day counts in code}: ACT/360, ACT/365F, 30E/360, 30/360 (US), ACT/ACT (ISDA).
+\item \textbf{ACT/ACT (ICMA) status}: Recognized but intentionally not implemented; selecting it raises hard error.
+\item \textbf{Day-count fallback behavior}: No automatic fallback is applied in runtime; configured basis must be supported.
+\item \textbf{PV01 construction}: Same premium segmentation with spread set to \(1.0\).
+\item \textbf{Accrued premium}: Computed from previous payment date to as-of (excluding as-of day), split at notice dates.
+
+\item \textbf{Replenishment availability}: Replenishment runs when \(t \le\) replenishment end date and no stop event has occurred.
+\item \textbf{Replenishment objective}: Top up scheduled pool toward cap amount using synthetic exposure.
+\item \textbf{Runoff handling of prior top-up}: Existing top-up is multiplied by runoff ratio \(\frac{\text{base\_bal}(t)}{\text{base\_bal}(t^-)}\) (clipped to \([0,1]\)).
+\item \textbf{Default replacement policy}: Defaults are not replenished; amortization/maturity (and prepayment if enabled) can be topped up.
+\item \textbf{Non-defaulted metric pool}: Loans become defaulted for replenishment metrics from notice date onward.
+\item \textbf{Stop event 1}: WAPD of non-defaulted pool exceeds \texttt{STOP\_EVENT\_WAPD\_MAX\_EXCL\_DEFAULTED}.
+\item \textbf{Stop event 2}: \(\frac{CumLoss}{N_{\text{ref,asof}}}\) exceeds \texttt{STOP\_EVENT\_CUMULATIVE\_LOSS\_MAX}.
+\item \textbf{Guideline enforcement}: Post-top-up eligibility/guideline checks are hard pass/fail.
+\item \textbf{If guidelines pass}: Top-up fills full shortfall to cap at that event date.
+\item \textbf{If guidelines fail}: No top-up is added at that event date.
+\item \textbf{Binding-constraint partial top-up}: Not implemented in current code (all-or-nothing at each event date).
+\item \textbf{Months-below-half-cap stop test}: Config knobs exist but this specific test is not implemented in current logic.
+
+\item \textbf{Prepayment toggle}: If \texttt{ENABLE\_PREPAYMENT=False} or \(\texttt{CPR\_ANNUAL}\le 0\), no loan prepays.
+\item \textbf{CPR conversion}: 
+\[
+p_q=1-(1-\texttt{CPR\_ANNUAL})^{1/4}.
+\]
+\item \textbf{Prepayment simulation}: Each quarter for each live loan, draw \(U\sim U(0,1)\); first quarter with \(U<p_q\) is prepayment date.
+\item \textbf{Prepayment timing}: Prepayment sets loan balance to zero from that quarter date onward.
+\item \textbf{Pathwise prepayment seeding}: Per-path RNG uses \(\texttt{RANDOM\_SEED}+1{,}000{,}000+p\).
+
+\item \textbf{Path dead-tranche convention}: If \(N_{\text{tr}}(\text{as-of})\le 0\) on a path, no future cashflows are added for that path.
+\item \textbf{Investor scaling}: Full-tranche path PV legs are scaled by \texttt{OUR\_PERCENTAGE} at aggregation stage.
+\item \textbf{NPV definition}:
+\[
+NPV_{\text{MTM}}=PV_{\text{premium}}+PV_{\text{write-down}}+PV_{\text{redemption}}.
+\]
+\item \textbf{Clean/dirty price basis}: Prices are per 100 of investor as-of notional \(N_{\text{asof,ours}}\).
+\item \textbf{Zero-notional price behavior}: If \(N_{\text{asof,ours}}\le 0\), clean and dirty prices are set to 0.
+\item \textbf{Par spread solver}: Closed form
+\[
+s^*=\frac{PV_{\text{wd,pos}}-PV_{\text{red}}}{PV01},
+\]
+where \(PV_{\text{wd,pos}}=\mathbb{E}[-PV_{\text{wd,path}}]\cdot \texttt{OUR\_PERCENTAGE}\).
+\item \textbf{Par spread fallback}: If \(PV01\le 0\), solver raises and pricing code returns par spread \(0.0\).
+\item \textbf{Loss distribution outputs}: Expected loss, VaR99, ES99 are computed on investor-scaled path tranche losses.
+\item \textbf{Reconciliation output}: Expected premium/write-down/redemption cashflow by date table.
+
+\item \textbf{Validation pack}: Includes bounds checks, spread monotonicity check, and convergence hooks over seeds/path counts.
+\item \textbf{Bounds checks implemented}: Loss vs notional bound, non-negative notional, finite clean/dirty outputs.
+\item \textbf{Monotonicity check}: Reprices across spread grid and reports \(\Delta NPV\) stepwise monotonic indicator.
+\item \textbf{Convergence check}: Reprices across configurable seeds and path counts, reporting par spread, NPV, expected loss.
+
+\item \textbf{Progress display}: Optional progress bar with ETA and optional continuously rotating spinner.
+\item \textbf{Progress toggles}: Controlled by \texttt{ENABLE\_PROGRESS\_BAR}, \texttt{ENABLE\_ACTIVITY\_SPINNER}, and refresh parameters.
+\item \textbf{Liveness during startup}: Spinner can rotate even before path count advances, so long runs do not look frozen.
+
+\item \textbf{Intentional v1 simplifications}: No FX conversion, no fees/expenses, no call/unwind feature logic.
+\item \textbf{Junior tranche treatment}: Current implementation is first-loss bucket logic for junior tranche state, then investor-share scaling.
+\item \textbf{LGD source naming}: Loss uses \(\max(LGD_{\text{econ}},LGD_{\text{reg}})\) from tape columns \texttt{LGD\_econ} and \texttt{LGD\_reg}.
+\item \textbf{Config-source rule}: Runtime logic uses \texttt{srt\_model\_config.py}; legacy \texttt{srt\_config.py} is not used by the SRT model pipeline.
+
+\end{enumerate}
+
+\section*{Implementation note}
+This document is intentionally implementation-centric. If legal/term-sheet wording differs, the code behavior described here should be treated as the operational model until changed.
+
+\end{document}

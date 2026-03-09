@@ -2,11 +2,13 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from typing import Optional
 
 #%%
 FILE_PATH = "eur_quotes.xlsx"
 SHEET_NAME = "Discount Function"
 ALLOW_EXTRAPOLATION = False  # keep False for no extrapolation
+_CURVE_CACHE: Optional["DiscountCurveEUR"] = None
 
 
 #%%
@@ -270,43 +272,59 @@ def plot_discount_curve(curve: DiscountCurveEUR, n_points: int = 500, include_no
     plt.show()
 
 
-#%%
-# Build curve from Excel
-meta, curve_data = read_discount_function_sheet(FILE_PATH, SHEET_NAME)
-
-disc_ipol = meta.get("Disc Ipol", "")
-intpol_conv = meta.get("Intpol Conv", "")
-cal_conv = meta.get("Cal Conv", "")
-irr_conv = meta.get("Irr Conv", "")
-pmt_freq = meta.get("Pmt Freq", "")
-
-curve = DiscountCurveEUR(
-    node_dates=curve_data["Date"],
-    node_dfs=curve_data["Factor"],
-    disc_ipol=disc_ipol,
-    intpol_conv=intpol_conv,
-    cal_conv=cal_conv,
-    irr_conv=irr_conv,
-    pmt_freq=pmt_freq,
-    allow_extrapolation=ALLOW_EXTRAPOLATION,
-)
-
-print("Curve loaded successfully.")
-print(f"Anchor date: {curve.anchor_date.date()}")
-print(f"First DF: {curve.node_df[0]:.10f}")
-print(f"Last node: {curve.node_dates[-1].date()} | Last DF: {curve.node_df[-1]:.10f}")
+def load_discount_curve_from_excel(
+    file_path: str = FILE_PATH,
+    sheet_name: str = SHEET_NAME,
+    allow_extrapolation: bool = ALLOW_EXTRAPOLATION,
+) -> DiscountCurveEUR:
+    meta, curve_data = read_discount_function_sheet(file_path, sheet_name)
+    disc_ipol = meta.get("Disc Ipol", "")
+    intpol_conv = meta.get("Intpol Conv", "")
+    cal_conv = meta.get("Cal Conv", "")
+    irr_conv = meta.get("Irr Conv", "")
+    pmt_freq = meta.get("Pmt Freq", "")
+    return DiscountCurveEUR(
+        node_dates=curve_data["Date"],
+        node_dfs=curve_data["Factor"],
+        disc_ipol=disc_ipol,
+        intpol_conv=intpol_conv,
+        cal_conv=cal_conv,
+        irr_conv=irr_conv,
+        pmt_freq=pmt_freq,
+        allow_extrapolation=allow_extrapolation,
+    )
 
 
-#%%
-# Usage example
-query_date = "2034-01-30"
-try:
-    df_q = curve.get_discount_factor(query_date)
-    print(f"Discount factor on {pd.Timestamp(query_date).date()}: {df_q:.10f}")
-except ValueError as e:
-    print(f"Could not retrieve DF for {query_date}: {e}")
+def _get_or_load_curve(
+    file_path: str = FILE_PATH,
+    sheet_name: str = SHEET_NAME,
+    allow_extrapolation: bool = ALLOW_EXTRAPOLATION,
+) -> DiscountCurveEUR:
+    global _CURVE_CACHE
+    if _CURVE_CACHE is None:
+        _CURVE_CACHE = load_discount_curve_from_excel(
+            file_path=file_path,
+            sheet_name=sheet_name,
+            allow_extrapolation=allow_extrapolation,
+        )
+    return _CURVE_CACHE
 
 
-#%%
-# Plot curve
-plot_discount_curve(curve)
+def get_discount_factor(query_date) -> float:
+    curve = _get_or_load_curve()
+    return curve.get_discount_factor(query_date)
+
+
+if __name__ == "__main__":
+    curve = _get_or_load_curve()
+    print("Curve loaded successfully.")
+    print(f"Anchor date: {curve.anchor_date.date()}")
+    print(f"First DF: {curve.node_df[0]:.10f}")
+    print(f"Last node: {curve.node_dates[-1].date()} | Last DF: {curve.node_df[-1]:.10f}")
+    query_date = "2034-01-30"
+    try:
+        df_q = curve.get_discount_factor(query_date)
+        print(f"Discount factor on {pd.Timestamp(query_date).date()}: {df_q:.10f}")
+    except ValueError as e:
+        print(f"Could not retrieve DF for {query_date}: {e}")
+    plot_discount_curve(curve)
