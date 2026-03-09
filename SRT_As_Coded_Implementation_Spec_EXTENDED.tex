@@ -1,0 +1,882 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{xurl}
+\usepackage{microtype}
+
+\hypersetup{breaklinks=true,hidelinks}
+\Urlmuskip=0mu plus 2mu
+\setlength{\emergencystretch}{3em}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{0pt}
+\sloppy
+\raggedbottom
+
+\newcommand{\CodeRefs}{
+\begin{itemize}[leftmargin=1.4em,itemsep=0.15em,topsep=0.2em,parsep=0em]
+  \item Config inputs: \path{srt_model_config.py}
+  \item Config validation/calendar resolution: \path{srt_model/config.py}
+  \item Tape normalization and rating mapping: \path{srt_model/io/portfolio.py}, \path{srt_model/ratings.py}
+  \item Schedule and calendar logic: \path{srt_model/grid/schedule.py}, \path{srt_model/grid/dates.py}, \path{srt_model/grid/calendar.py}
+  \item Curves/copula/default-time generation: \path{srt_model/curves/*.py}, \path{srt_model/credit/*.py}
+  \item Tranche, pool, and pricing logic: \path{srt_model/tranche/cashflows.py}, \path{srt_model/pool/*.py}, \path{srt_model/pv/pricing.py}
+\end{itemize}
+}
+
+\title{SRT Valuation Model - As-Coded Implementation Specification\\Extended Explanations}
+\date{2026-02-28}
+
+\begin{document}
+\maketitle
+
+\section*{How to read this document}
+This file is the extended companion to \texttt{SRT\_As\_Coded\_Implementation\_Spec.tex}.  
+It describes what the code currently does, with extra implementation detail and rationale.
+
+For each numbered item:
+\begin{itemize}
+  \item \textbf{Parameter text} states the effective rule.
+  \item \textbf{Explanation} describes why and how it is applied in code.
+  \item \textbf{Formulas} are shown where useful.
+\end{itemize}
+
+\section*{Implementation references}
+Primary runtime modules:
+\begin{itemize}
+  \item \texttt{srt\_model/config.py}
+  \item \texttt{srt\_model/pipeline.py}
+  \item \texttt{srt\_model/pv/pricing.py}
+  \item \texttt{srt\_model/pool/replenishment.py}
+  \item \texttt{srt\_model/pool/ead.py}
+  \item \texttt{srt\_model/credit/copula.py}
+  \item \texttt{srt\_model/credit/default\_times.py}
+\end{itemize}
+
+\section*{Notation used in formulas}
+Unless explicitly stated otherwise, time variables are measured in years from as-of, and variables with ``Date'' in the name are calendar dates.
+\begin{itemize}
+  \item \(t\): generic time point in years from as-of.
+  \item \(t_k\): \(k\)-th tenor node (in years) on a curve grid.
+  \item \(\Delta t_k\): tenor-interval width, \(t_k-t_{k-1}\).
+  \item \(\tau\): default time in years from as-of.
+  \item \(\tau_{\text{date}}\): calendar default date obtained by mapping \(\tau\) to days.
+  \item \(S(t)\): survival probability to time \(t\), \(P(\tau>t)\).
+  \item \(H(t)\): cumulative hazard to time \(t\).
+  \item \(\lambda_k\): forward hazard intensity assumed constant on interval \(k\).
+  \item \(U\): simulated uniform random variable in \((0,1]\) used for inverse-transform default timing.
+  \item \(\Phi(\cdot)\): standard normal CDF.
+  \item \(X_i\): latent credit variable for obligor \(i\) in one-factor copula.
+  \item \(Y\): systematic Gaussian factor common to all obligors on a path.
+  \item \(\varepsilon_i\): idiosyncratic Gaussian factor for obligor \(i\).
+  \item \(\rho\): asset-correlation parameter in the one-factor copula.
+  \item \(DF(date)\): discount factor from as-of to a future calendar date.
+  \item \(t_{\text{start,eff}}\): effective accrual start date used for pricing schedule logic.
+  \item \(T_k, T_{k+1}\): consecutive coupon-period boundary dates.
+  \item \(T\): generic maturity date in balance formulas.
+  \item \(T_{\text{LFM}}\): legal final maturity date.
+  \item \(\text{NoticeRaw}\): unadjusted notice date built from default-date plus notice lag.
+  \item \(\text{NoticeDate}\): adjusted/capped notice date actually used for booking losses.
+  \item \(\text{ProtStart}, \text{ProtEnd}\): protection start/end dates for covered default window.
+  \item \(B(t)\): scheduled loan balance at time \(t\).
+  \item \(B_0\): loan outstanding principal at as-of (starting balance).
+  \item \(EAD(\tau)\): exposure at default, evaluated at default time and then frozen.
+  \item \(LGD_{\text{econ}}, LGD_{\text{reg}}\): economic and regulatory LGD inputs from tape.
+  \item \(Loss_{\text{loan}}\): loan-level loss amount used in portfolio loss aggregation.
+  \item \(N_{\text{ref}}\): reference notional, sum of included loan principals at as-of.
+  \item \(\text{tranche\_pct}\): current tranche share of total SRT notional.
+  \item \(PoolBal_{\text{sched}}(t)\): scheduled pool balance path at time/date \(t\).
+  \item \(\alpha\): scaling ratio linking scheduled tranche notional to scheduled pool balance.
+  \item \(N_{\text{sched}}(t)\): scheduled tranche notional before loss deduction.
+  \item \(CumLoss(t)\): cumulative booked portfolio loss up to time/date \(t\).
+  \item \(N_{\text{tr}}(t)\): outstanding tranche notional after cumulative-loss deduction.
+  \item \(\Delta Loss(t)\): incremental portfolio loss booked at event date \(t\).
+  \item \(\Delta TrLoss(t)\): incremental tranche loss after outstanding-notional cap.
+  \item \(CF_{\text{wd}}(t)\): tranche write-down cashflow at date \(t\).
+  \item \(CF_{\text{red}}(t)\): tranche redemption cashflow at date \(t\).
+  \item \(Prem(a,b)\): premium accrued over sub-interval \([a,b)\).
+  \item \(s\): annual premium spread as decimal (for example, 0.05 = 500 bps).
+  \item \(YearFrac(a,b)\): day-count year fraction between dates \(a\) and \(b\).
+  \item \(CPR_{\text{annual}}\): annual conditional prepayment rate input.
+  \item \(p_q\): implied quarterly prepayment probability from annual CPR.
+  \item \(p\): generic simulation path index.
+  \item \(PV_{\text{premium}}, PV_{\text{write-down}}, PV_{\text{redemption}}\): present values of pricing legs.
+  \item \(NPV_{\text{MTM}}\): model mark-to-market value (sum of all priced legs).
+  \item \(PV01\): premium leg PV sensitivity base used in par-spread formula.
+  \item \(PV_{\text{wd,pos}}\): positive write-down quantity used in closed-form par-spread equation.
+  \item \(s^*\): par spread (spread that sets model NPV to zero).
+  \item \(N_{\text{asof,ours}}\): investor-owned notional at as-of used for price normalization.
+  \item \(Clean, Dirty, Accrued\): clean price, dirty price, and accrued premium outputs.
+  \item \(\Delta NPV\): stepwise NPV change in spread-monotonicity diagnostics.
+\end{itemize}
+
+\begin{enumerate}[label=\arabic*),leftmargin=*,align=left]
+
+\item \textbf{Valuation anchor}
+\paragraph{Parameter text} Valuation is anchored to \texttt{AS\_OF\_DATE}.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This date is parsed once during input preparation and is the reference point for forward cashflow inclusion, schedule generation, and discounting.
+
+\item \textbf{Required-config hard-stop behavior}
+\paragraph{Parameter text} Missing required fields cause warning print(s) and hard error.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} The loader prints each missing field and then raises \texttt{ConfigValidationError}. The model does not proceed with partial defaults for required fields.
+
+\item \textbf{Required config set (runtime)}
+\paragraph{Parameter text} Tape path/sheet, core dates, premium spread/day count, issuer calendar input, current tranche value, current SRT total value, and investor share are mandatory.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This set is enforced by \texttt{REQUIRED\_CONFIG\_FIELDS}. It reflects the current live implementation, not legacy assumptions.
+
+\item \textbf{Calendar universe}
+\paragraph{Parameter text} Allowed calendars are TARGET/TARGET2, Sweden, UK, Germany, France, Spain, Switzerland.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Country keys are normalized to uppercase and validated against a fixed allowed dictionary.
+
+\item \textbf{Joint calendar toggle}
+\paragraph{Parameter text} \texttt{JOINT\_CALENDARS\_ENABLED} controls \emph{business-day determination only}. If enabled, user must provide a non-empty list of valid calendars in \texttt{JOINT\_CALENDAR\_COUNTRIES}.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Joint mode is strict: missing joint list or invalid members causes hard error before valuation.
+Mechanically:
+\begin{itemize}
+  \item If joint mode is OFF, only the base issuer calendar (\texttt{ISSUER\_COUNTRY}) is used.
+  \item If joint mode is ON, a date is business day only if it is business day in \emph{every} selected calendar.
+  \item This affects date adjustment (Modified Following / Preceding), payment dates, notice dates, and legal-date adjustments.
+\end{itemize}
+This does not introduce multi-currency pricing logic; it is purely a holiday-calendar rule.
+
+\item \textbf{Business-day definition}
+\paragraph{Parameter text} A date is business day iff not weekend and not holiday under selected calendar set.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} In joint mode, the date must be business day in all chosen calendars.
+
+\item \textbf{Date-adjustment conventions}
+\paragraph{Parameter text} Modified Following is used for payment/protection/legal dates; Preceding is used for notice dates.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This separation is explicitly encoded in schedule/calendar utilities.
+
+\item \textbf{Calendar implementation caching}
+\paragraph{Parameter text} Holiday objects and business-day checks are memoized.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This is a runtime-performance feature only; it does not change model outputs. It significantly reduces repeated holiday object construction.
+
+\item \textbf{Tape loading source}
+\paragraph{Parameter text} Portfolio tape is loaded from configured Excel path and sheet.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} The loader is intentionally thin and delegates domain validation to subsequent stages.
+
+\item \textbf{Currency support}
+\paragraph{Parameter text} Portfolio currency must be single-valued and must be either EUR or USD.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} The loader reads \texttt{Loan\_Currency} and builds the unique set of non-empty values:
+\begin{itemize}
+  \item If more than one currency is present, valuation stops with hard error.
+  \item If exactly one currency is present but it is not EUR/USD, valuation stops with hard error.
+  \item If valid, that single currency selects both survival/hazard CSV sources and discount curve adapter.
+\end{itemize}
+This is orthogonal to Spec 5 (joint calendars): Spec 5 is holiday logic, Spec 10 is deal-currency and curve-selection logic.
+
+\item \textbf{Required tape columns}
+\paragraph{Parameter text} An explicit required-column schema is enforced before row normalization.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Missing referenced columns are not tolerated and terminate the run.
+Required columns are:
+\begin{itemize}
+  \item \texttt{Reference\_Claim\_ID}
+  \item \texttt{Debtor\_ID}
+  \item \texttt{Debtor\_Group\_ID}
+  \item \texttt{Loan\_Currency}
+  \item \texttt{Internal\_Rating}
+  \item \texttt{PD}
+  \item \texttt{Turnover}
+  \item \texttt{Country}
+  \item \texttt{Moodys\_Industry}
+  \item \texttt{WAL}
+  \item \texttt{Maturity\_Date}
+  \item \texttt{Amortisation\_Type}
+  \item \texttt{Outstanding\_Principal\_Amount}
+  \item \texttt{LGD\_reg}
+  \item \texttt{LGD\_econ}
+\end{itemize}
+Spec 11 is a \emph{schema gate}: it checks that columns exist. Row-level value parsing and validation happen after this gate.
+
+\item \textbf{Loan row filtering}
+\paragraph{Parameter text} Loans with maturity at or before as-of, or with zero outstanding principal, are excluded.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} These loans are out of forward-risk/economic scope for valuation.
+
+\item \textbf{Probability range checks}
+\paragraph{Parameter text} \texttt{PD}, \texttt{LGD\_reg}, \texttt{LGD\_econ} must be in \([0,1]\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Violations are hard errors; no clipping or imputation is performed.
+
+\item \textbf{Blank amortisation handling}
+\paragraph{Parameter text} Blank \texttt{Amortisation\_Type} is mapped to Bullet.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This was intentionally added to support real tape behavior where many rows are blank in this field.
+
+\item \textbf{Turnover bucket parser}
+\paragraph{Parameter text} Text buckets are converted to conservative numeric lower bounds.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This parser exists because replenishment checks compare turnover against numeric thresholds.
+Mechanics:
+\begin{itemize}
+  \item ``less than X'' $\rightarrow 0$ (conservative lower bound of the bucket).
+  \item ``A - B'' $\rightarrow A$ (left bound of range).
+  \item ``more than X'' $\rightarrow X$.
+\end{itemize}
+Examples:
+\begin{itemize}
+  \item ``less than 50m'' \(\rightarrow 0\)
+  \item ``125m - 250m'' \(\rightarrow 125{,}000{,}000\)
+  \item ``more than 500m'' \(\rightarrow 500{,}000{,}000\)
+\end{itemize}
+Impact on mechanics: this does \emph{not} change core cashflow/default mechanics; it affects only guideline/eligibility checks that use turnover amounts. It is intentionally conservative (can reject borderline cases rather than over-accept).
+
+\item \textbf{Internal rating normalization}
+\paragraph{Parameter text} Internal rating keys are normalized to one-decimal strings.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This ensures stable mapping behavior for numerics and strings (for example 2.2 and ``2.20'' map to the same key ``2.2'').
+
+\item \textbf{Internal-to-external map lookup}
+\paragraph{Parameter text} Mapping requires exact normalized key match.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Missing map entries are hard errors; there is no nearest-neighbor fallback.
+Spec 17 is a \emph{semantic mapping gate}: it converts each row's internal rating into an external rating label using \texttt{INTERNAL\_TO\_EXTERNAL\_RATING} in config.
+This is different from Spec 11:
+\begin{itemize}
+  \item Spec 11 asks: ``Is the required \emph{column} present in the tape?''
+  \item Spec 17 asks: ``Given the column value, can it be mapped to a valid external rating label?''
+\end{itemize}
+Both are required; passing Spec 11 does not imply passing Spec 17.
+
+\item \textbf{External rating normalization}
+\paragraph{Parameter text} External labels are uppercased and whitespace-trimmed.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This normalizes user-provided mapping values before curve lookup.
+
+\item \textbf{Plus/minus removal for lookup}
+\paragraph{Parameter text} Survival lookup strips terminal \(+\) and \(-\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Example: \(BB+\rightarrow BB\), \(BBB-\rightarrow BBB\).
+
+\item \textbf{Low-grade collapse}
+\paragraph{Parameter text} \(CC\), \(C\), and \(D\) collapse to \(CCC\) for survival lookup.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This is a user-approved implementation rule to align sparse low-grade curve availability with rating mapping.
+
+\item \textbf{Obligor grouping key}
+\paragraph{Parameter text} Loans are grouped by \texttt{Debtor\_ID}.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Simulation and default-time assignment are obligor-level, not loan-level.
+
+\item \textbf{Obligor curve assignment}
+\paragraph{Parameter text} Debtor uses worst external rating among its loans under fixed rating ordering.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This conservative assignment is implemented via fixed rank table.
+
+\item \textbf{Curve-coverage hard validation}
+\paragraph{Parameter text} Every assigned debtor curve key must exist in loaded curve set.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Missing curve coverage raises hard error before Monte Carlo.
+
+\item \textbf{Survival/hazard curve source}
+\paragraph{Parameter text} Hazard and survival matrices are loaded from configured CSV files by currency.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} EUR and USD paths are selected from the validated tape currency.
+
+\item \textbf{Curve matrix consistency}
+\paragraph{Parameter text} Hazard and survival matrices must share identical rating index.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Empty matrices or index mismatch are hard errors.
+
+\item \textbf{Hazard model}
+\paragraph{Parameter text} Piecewise-constant forward hazards by tenor interval.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Tenors \(t_k\) are sorted; on each interval \((t_{k-1},t_k]\), forward hazard is constant at \(\lambda_k\). Cumulative hazard \(H(t)\) is built as interval sums of \( \lambda_k \Delta t_k \), where \(\Delta t_k=t_k-t_{k-1}\) is the width of interval \(k\) in years and \(\lambda_k\) is the forward default intensity on interval \(k\).
+
+\item \textbf{Survival function evaluation}
+\paragraph{Parameter text} 
+\paragraph{Where in code}\CodeRefs
+\[
+S(t)=\exp(-H(t))
+\]
+with interval-local accumulation.
+\paragraph{Explanation} Here \(S(t)\) is survival probability to time \(t\) (probability the obligor has not defaulted by \(t\)), and \(H(t)\) is cumulative hazard up to \(t\). Under the piecewise-constant hazard model, \(H(t)\) is built from interval contributions \(\lambda_k \Delta t_k\). For \(t=0\), survival is \(1\). For \(t<0\), hard error.
+
+\item \textbf{Survival out-of-horizon handling}
+\paragraph{Parameter text} Requesting \(S(t)\) beyond max tenor is hard error.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} There is no extrapolation in the survival adapter.
+
+\item \textbf{Default-time inversion rule}
+\paragraph{Parameter text} Invert analytically using \(S(\tau)=U\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Here \(U\) is a simulated uniform random variable in \((0,1]\), \(\tau\) is default time in years from as-of, and \(S(\tau)\) is survival probability at that time. Solving \(S(\tau)=U\) is the inverse-transform step that turns random uniforms into economically consistent default times under the calibrated survival curve.
+Implications:
+\begin{itemize}
+  \item Lower \(U\) implies earlier default (smaller \(\tau\)); higher \(U\) implies later default (larger \(\tau\)).
+  \item The mapping is monotone and deterministic for a fixed curve and \(U\).
+  \item Because hazards are piecewise-constant, each interval has a closed-form solution for \(\tau\), so no iterative root finder is needed.
+\end{itemize}
+
+\item \textbf{Beyond-curve implied default}
+\paragraph{Parameter text} If target hazard exceeds last cumulative hazard, \(\tau=\infty\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Here \(\tau=\infty\) means implied default occurs beyond the modeled tenor horizon, so the path has no covered default event within modeled time.
+
+\item \textbf{Discount-curve adapter selection}
+\paragraph{Parameter text} Currency-specific adapter wraps EUR or USD discount module.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} The portfolio currency is validated first (EUR or USD only), then the runtime selects the corresponding discount source file:
+\begin{itemize}
+  \item EUR deals use the EUR discount module.
+  \item USD deals use the USD discount module.
+\end{itemize}
+The adapter normalizes both into one common interface, \texttt{df(date)}, so pricing code does not need currency-specific branches. This spec is only about software wiring/interface unification; it does not add FX conversion or cross-currency logic.
+
+\item \textbf{Discounting leg consistency}
+\paragraph{Parameter text} Same \(DF(date)\) function is used for premium, write-down, and redemption.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Here \(DF(date)\) is the discount factor from as-of date to the given future cashflow date. Using one \(DF(\cdot)\) function for all legs enforces single-curve valuation per deal currency in v1.
+
+\item \textbf{Copula structure}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+X_i=\sqrt{\rho}Y+\sqrt{1-\rho}\varepsilon_i,\quad U_i=\Phi(X_i).
+\]
+\paragraph{Explanation} \(X_i\) is obligor \(i\)'s latent credit variable; \(\rho\) is the one-factor asset correlation; \(Y\) is the common systematic Gaussian factor for the path; \(\varepsilon_i\) is obligor-specific Gaussian noise; \(\Phi(\cdot)\) is the standard normal CDF; \(U_i\) is the transformed uniform used for inverse default-time mapping. There is one \(Y\) per path and one \(\varepsilon_i\) per obligor.
+
+\item \textbf{Rho domain}
+\paragraph{Parameter text} \(0 \le \rho < 1\) is mandatory.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(\rho\) is the copula correlation weight between systematic and idiosyncratic components. Values outside this interval are rejected as configuration errors.
+
+\item \textbf{RNG policy}
+\paragraph{Parameter text} \texttt{numpy.default\_rng} with fixed seed from config.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Results are reproducible for fixed inputs and seed.
+
+\item \textbf{Uniform clipping}
+\paragraph{Parameter text} Simulated uniforms are clipped to \([10^{-15},1]\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} The inversion step uses transforms equivalent to \(-\log(U)\), so exact or near-zero \(U\) can cause numerical overflow/instability. The floor \(10^{-15}\) prevents that and keeps calculations finite. The upper bound \(1\) preserves the boundary case used by the solver (\(U=1 \Rightarrow \tau=0\) convention in current implementation).
+Practical implication: clipping is a numerical safeguard, not a modeling rule change; it only affects extreme tail machine-precision cases.
+
+\item \textbf{Default-time matrix generation}
+\paragraph{Parameter text} Uniform matrix is converted to \(\tau\)-years matrix column-by-column by debtor curve key.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(\tau\) is default time in years from as-of. The resulting matrix shape is \((\text{n\_paths},\text{n\_obligors})\), where \(\text{n\_paths}\) is number of Monte Carlo scenarios and \(\text{n\_obligors}\) is number of debtor IDs.
+
+\item \textbf{Effective accrual start}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+t_{\text{start,eff}}=\max(\text{as-of},\text{Accrual Start Date}).
+\]
+\paragraph{Explanation} \(t_{\text{start,eff}}\) is the anchor used to build \emph{future premium cashflow periods} for PV from as-of onward. \(\text{as-of}\) is valuation date; \(\text{Accrual Start Date}\) is contractual accrual start.
+Implication: future-leg pricing does not create forward premium periods that start before as-of.
+Important: this does not mean pre-as-of accrual is ignored in all outputs; accrued premium to as-of is handled separately (see Spec 42).
+
+\item \textbf{Quarterly schedule rule}
+\paragraph{Parameter text} Start from first payment date strictly after \(t_{\text{start,eff}}\), then add \(+3\) calendar months.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Month stepping respects EOM toggle behavior.
+
+\item \textbf{Final stub inclusion}
+\paragraph{Parameter text} If accrual end date is not on schedule, append it as final stub date.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This ensures premium accrual always terminates at configured accrual end.
+
+\item \textbf{Schedule post-filter}
+\paragraph{Parameter text} Keep only adjusted payment dates strictly greater than as-of.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This enforces future-cashflow-only valuation from as-of.
+
+\item \textbf{Previous payment date at as-of}
+\paragraph{Parameter text} Last adjusted payment date on or before as-of is computed by rolling backward/forward.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This date is needed to compute accrued premium for dirty price:
+\begin{itemize}
+  \item accrual window for accrued amount is \((\text{previous payment date}, \text{as-of})\), with notice-date splits where relevant.
+  \item this is a historical-to-as-of adjustment term, not a new future coupon period.
+\end{itemize}
+So Spec 42 and Spec 38 are complementary:
+\begin{itemize}
+  \item Spec 38 governs start of \emph{future} priced coupon periods.
+  \item Spec 42 governs \emph{already running} coupon accrual up to as-of for dirty-price adjustment.
+\end{itemize}
+
+\item \textbf{Notice date construction}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+\text{NoticeRaw}=\tau+1\text{M},\quad
+\text{NoticeDate}=\min(\text{Preceding(NoticeRaw)},\text{AdjMF(LFM)}).
+\]
+\paragraph{Explanation} \(\tau\) is default date (in calendar-date form); \(1\text{M}\) means one calendar month lag; \(\text{Preceding}(\cdot)\) is preceding business-day adjustment; \(\text{AdjMF}(\cdot)\) is Modified Following adjustment; \(\text{LFM}\) is legal final maturity date. This includes month-end clamping in month addition.
+
+\item \textbf{Coverage rule}
+\paragraph{Parameter text} A default is covered iff
+\paragraph{Where in code}\CodeRefs
+\[
+\text{ProtStart}\le \tau_{\text{date}} \le \text{ProtEnd}.
+\]
+\paragraph{Explanation} \(\text{ProtStart}\) and \(\text{ProtEnd}\) are protection window boundary dates; \(\tau_{\text{date}}\) is mapped default date. Eligibility uses default date, not notice date.
+
+\item \textbf{Tau-to-date conversion}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+\text{tau\_days}=\left\lfloor \max(0,\tau)\cdot \texttt{TAU\_YEAR\_BASIS\_DAYS}\right\rfloor.
+\]
+\paragraph{Explanation} \(\tau\) is default time in years; \(\texttt{TAU\_YEAR\_BASIS\_DAYS}\) is conversion basis (days per year); \(\lfloor\cdot\rfloor\) floors to integer day count. Basis defaults to 365.25 in config but is user-configurable.
+
+\item \textbf{Amortization normalization}
+\paragraph{Parameter text} Bullet/n-a/until-further-notice map to bullet; amortisation/annuity map to linear.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Normalizer is memoized for speed.
+
+\item \textbf{Bullet balance rule}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+B(t)=B_0 \ (t<T),\quad B(t)=0 \ (t\ge T).
+\]
+\paragraph{Explanation} \(B(t)\) is scheduled loan balance at time/date \(t\); \(B_0\) is as-of outstanding principal; \(T\) is loan maturity date. Maturity drop is start-of-day at \(T\).
+
+\item \textbf{Linear balance rule}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+B(t)=B_0\max\left(0,1-\frac{t-\text{as-of}}{T-\text{as-of}}\right)
+\]
+for \(t\in(\text{as-of},T)\).
+\paragraph{Explanation} \(B(t)\) is scheduled balance; \(B_0\) is as-of outstanding; \(t\) is evaluation date; \(T\) is maturity date; \(\text{as-of}\) is valuation date. The fraction \(\frac{t-\text{as-of}}{T-\text{as-of}}\) is elapsed-time ratio on calendar-day basis.
+
+\item \textbf{Prepayment-adjusted balance}
+\paragraph{Parameter text} If prepayment date exists and \(t\ge\) prepayment date, balance is zero.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Let \(t_{\text{prepay}}\) be the simulated prepayment date for a loan.
+\begin{itemize}
+  \item If \(t < t_{\text{prepay}}\), balance uses the scheduled amortization rule (bullet or linear).
+  \item If \(t \ge t_{\text{prepay}}\), balance is forced to zero.
+\end{itemize}
+This prepayment-adjusted balance is used consistently wherever loan balance is needed in runtime: EAD at default, pool scheduled balance, and replenishment/guideline weighting logic.
+
+\item \textbf{EAD freeze rule}
+\paragraph{Parameter text} EAD is evaluated at default date and frozen for loss booking.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} If a debtor defaults at \(\tau_{\text{date}}\), the model computes loan-level \(EAD(\tau_{\text{date}})\) once and carries that value unchanged to notice-date loss booking.
+Implications:
+\begin{itemize}
+  \item principal amortization between default date and notice date does not reduce booked loss;
+  \item prepayment events after default date do not reduce booked loss;
+  \item only the balance state at default date matters for covered-loss amount.
+\end{itemize}
+
+\item \textbf{Loan loss rule}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+Loss_{\text{loan}}=EAD(\tau)\cdot\max(LGD_{\text{econ}},LGD_{\text{reg}}).
+\]
+\paragraph{Explanation} \(Loss_{\text{loan}}\) is loan-level loss contribution; \(EAD(\tau)\) is exposure-at-default evaluated at default time \(\tau\); \(LGD_{\text{econ}}\) and \(LGD_{\text{reg}}\) are economic/regulatory LGDs from tape. This reflects the corrected LGD naming used in code and tape.
+
+\item \textbf{Loss booking timestamp}
+\paragraph{Parameter text} Loan losses are aggregated by notice date.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Tranche write-down cashflows occur at notice date with start-of-day effect.
+
+\item \textbf{Tranche percentage input design}
+\paragraph{Parameter text} Tranche percentage is derived from current live notionals:
+\paragraph{Where in code}\CodeRefs
+\[
+\text{tranche\_pct}=\frac{\texttt{CURRENT\_TRANCHE\_VALUE}}{\texttt{CURRENT\_SRT\_TOTAL\_VALUE}}.
+\]
+\paragraph{Explanation} \(\text{tranche\_pct}\) is current junior-tranche share of total SRT notional; numerator is current live junior tranche value; denominator is current live total SRT value. This replaces static initial tranche percentage to handle already-shrunk tranche state at valuation time.
+
+\item \textbf{Tranche notional validations}
+\paragraph{Parameter text} Current total and tranche values must be positive, and tranche value cannot exceed total.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Violations are hard errors.
+
+\item \textbf{Reference notional definition}
+\paragraph{Parameter text} 
+\paragraph{Where in code}\CodeRefs
+\[
+N_{\text{ref}}=\sum \text{included loan outstanding principal}.
+\]
+\paragraph{Explanation} \(N_{\text{ref}}\) is reference notional at as-of. The summation runs across included loans only (after maturity and zero-balance filters).
+
+\item \textbf{Scheduled tranche at as-of}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+N_{\text{sched}}(0)=N_{\text{ref}}\cdot \text{tranche\_pct}.
+\]
+\paragraph{Explanation} \(N_{\text{sched}}(0)\) is scheduled tranche notional at as-of for the full tranche; \(N_{\text{ref}}\) is reference notional; \(\text{tranche\_pct}\) is current tranche share.
+
+\item \textbf{Scale factor alpha}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+\alpha=\frac{N_{\text{sched}}(0)}{PoolBal_{\text{sched}}(0)}.
+\]
+\paragraph{Explanation} \(\alpha\) is scaling factor linking scheduled tranche and scheduled pool paths; \(N_{\text{sched}}(0)\) is scheduled tranche at as-of; \(PoolBal_{\text{sched}}(0)\) is scheduled pool balance at as-of. If denominator is zero, \(\alpha\) is set to zero.
+
+\item \textbf{Scheduled tranche path}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+N_{\text{sched}}(t)=\alpha\cdot PoolBal_{\text{sched}}(t).
+\]
+\paragraph{Explanation} \(N_{\text{sched}}(t)\) is scheduled tranche notional at \(t\); \(\alpha\) is fixed scaling ratio; \(PoolBal_{\text{sched}}(t)\) is scheduled pool balance at \(t\). Pool schedule includes amortization/maturity and replenishment effects, and prepayment if enabled.
+
+\item \textbf{Outstanding tranche path}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+N_{\text{tr}}(t)=\max(N_{\text{sched}}(t)-CumLoss(t),0).
+\]
+\paragraph{Explanation} \(N_{\text{tr}}(t)\) is outstanding tranche notional after losses; \(N_{\text{sched}}(t)\) is scheduled tranche notional; \(CumLoss(t)\) is cumulative booked portfolio loss up to \(t\). CumLoss is recognized at notice dates.
+
+\item \textbf{Incremental tranche loss}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+\Delta TrLoss(t)=\min(\Delta Loss(t),N_{\text{tr}}(t^-)).
+\]
+\paragraph{Explanation} \(\Delta TrLoss(t)\) is incremental tranche loss booked at \(t\); \(\Delta Loss(t)\) is incremental portfolio loss at \(t\); \(N_{\text{tr}}(t^-)\) is outstanding tranche notional immediately before \(t\). This caps tranche loss at remaining outstanding tranche notional.
+
+\item \textbf{Write-down cashflow convention}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+CF_{\text{wd}}(t)=-\Delta TrLoss(t).
+\]
+\paragraph{Explanation} \(CF_{\text{wd}}(t)\) is the protection-loss cashflow applied to tranche value at date \(t\); \(\Delta TrLoss(t)\) is incremental tranche principal loss recognized at that date.
+Why negative: pricing is from the tranche-holder perspective, so a write-down is a loss of principal value and enters PV as a negative cashflow.
+Mechanical meaning: write-down is not a coupon payment; it is a principal hit that reduces outstanding tranche notional and therefore also reduces later premium base.
+
+\item \textbf{Redemption at legal final}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+CF_{\text{red}}(T_{\text{LFM}})=N_{\text{tr}}(T_{\text{LFM}}^-),
+\]
+if legal final date is after as-of.
+\paragraph{Explanation} \(CF_{\text{red}}(T_{\text{LFM}})\) is redemption cashflow at legal final maturity \(T_{\text{LFM}}\); \(N_{\text{tr}}(T_{\text{LFM}}^-)\) is tranche outstanding just before legal final date. If tranche is already exhausted, redemption is zero.
+
+\item \textbf{Premium segmentation}
+\paragraph{Parameter text} Each coupon period is split at notice dates inside \((T_k,T_{k+1})\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(T_k\) and \(T_{k+1}\) are consecutive coupon boundary dates. Splitting at notice dates captures step-down of premium base at notice-date start-of-day.
+
+\item \textbf{Premium sub-interval formula}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+Prem(a,b)=s\cdot YearFrac(a,b)\cdot N_{\text{tr}}(a).
+\]
+\paragraph{Explanation} \(Prem(a,b)\) is premium accrued on sub-interval \([a,b)\); \(s\) is annual premium spread (decimal); \(YearFrac(a,b)\) is day-count year fraction for \([a,b)\); \(N_{\text{tr}}(a)\) is tranche outstanding at sub-interval start. Start-inclusive, end-exclusive interval convention is used.
+
+\item \textbf{Day-count implementations}
+\paragraph{Parameter text} ACT/360, ACT/365F, 30E/360, 30/360 (US), ACT/ACT (ISDA) are implemented.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} ACT/ACT (ICMA) is recognized but intentionally unsupported in runtime.
+
+\item \textbf{PV01 definition}
+\paragraph{Parameter text} PV01 leg is computed by running the same premium accrual engine with spread \(=1.0\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Here spread \(=1.0\) means a 100\% per-annum spread unit (not 1 bp). The resulting PV01 is the linear premium sensitivity base used by par spread solver.
+
+\item \textbf{Accrued premium}
+\paragraph{Parameter text} Accrued premium is from previous payment date to as-of, excluding as-of day, split at notice dates.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} It is computed pathwise and averaged.
+
+\item \textbf{Replenishment active window}
+\paragraph{Parameter text} Replenishment logic applies only while event date \(\le\) replenishment end and no stop event has been triggered.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} The inequality compares each event date to configured replenishment end date. Once a stop event triggers on a path, top-up is permanently disabled for subsequent dates on that same path.
+
+\item \textbf{Top-up state evolution}
+\paragraph{Parameter text} Existing top-up decays by base-balance runoff ratio between consecutive event dates.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Let \(TopUp(t^-)\) be top-up notional just before event date \(t\), and let \(Base(t)\) be scheduled pool balance from the original loan set (without top-up). The model applies
+\[
+TopUp(t)=TopUp(t^-)\cdot \min\!\left(1,\max\!\left(0,\frac{Base(t)}{Base(t^-)}\right)\right).
+\]
+This makes prior top-up run off at the same proportional speed as base scheduled pool run-off.
+Important: \(TopUp(\cdot)\) is a scalar synthetic notional state, not a set of explicit loans.
+Interpretation: this is how amortization of top-up is handled in v1. The top-up scalar ``amortizes'' by proportional decay, not by generating loan-level amortization schedules.
+Example: if \(Base\) moves \(100 \rightarrow 97\) (3\% run-off), then existing \(TopUp=20\) becomes \(20\times 0.97=19.4\) before any new add-on decision at that date.
+
+\item \textbf{Default replacement policy}
+\paragraph{Parameter text} Defaults are not replenished; amortization/maturity reductions are replenishable. Prepayment reductions are replenishable when prepayment is enabled.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} During replenishment-active dates, top-up is event-driven and can occur repeatedly:
+\begin{itemize}
+  \item if scheduled pool balance declines due to amortization and/or maturity run-off, the model can add top-up toward cap (subject to stop events and guidelines);
+  \item if prepayment is enabled and causes run-off, that run-off is also replenish-able;
+  \item defaults are explicitly excluded from replacement logic in v1 (default losses are handled via loss/write-down mechanics, not via top-up).
+\end{itemize}
+So top-up is not only at maturity; amortization run-off is also continuously eligible for replenishment while replenishment remains allowed.
+Implementation form: top-up is added as a synthetic notional amount into pool schedule (\(PoolBal_{\text{sched}}=Base+TopUp\)); the model does not instantiate new loan rows and does not increase principal on existing loans.
+At each eligible event date, if guidelines pass, the model computes shortfall \(Needed=Cap-(Base+TopUp)\) and, when \(Needed>0\), sets \(TopUp \leftarrow TopUp + Needed\). This is why top-up can repeatedly refill toward cap over time.
+
+\item \textbf{Non-defaulted pool for metrics}
+\paragraph{Parameter text} Loans are excluded from non-defaulted metric pool from notice date onward.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} ``Non-defaulted pool'' in this spec is a \emph{metrics-only} view used to evaluate WAPD and eligibility/guideline tests at each event date.
+Mechanically:
+\begin{itemize}
+  \item if an obligor has reached notice date, that obligor's loans are removed from the metric set;
+  \item this filtered set drives stop-event and guideline pass/fail tests;
+  \item it does not create/remove explicit loans in the base scheduled pool state.
+\end{itemize}
+
+\item \textbf{Stop event - WAPD}
+\paragraph{Parameter text} Stop when non-defaulted WAPD exceeds configured max.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} WAPD uses current balances as weights.
+
+\item \textbf{Stop event - cumulative loss}
+\paragraph{Parameter text} Stop when \(\frac{CumLoss}{N_{\text{ref,asof}}}\) exceeds configured threshold.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(CumLoss\) is cumulative booked portfolio loss up to event date; \(N_{\text{ref,asof}}\) is reference notional at as-of. This ratio is compared to configured maximum threshold.
+
+\item \textbf{Guideline enforcement mode}
+\paragraph{Parameter text} Guideline checks are hard pass/fail at each event date.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} On pass: top-up fills full cap shortfall. On fail: no top-up that event.
+
+\item \textbf{Partial binding top-up status}
+\paragraph{Parameter text} Partial max-feasible top-up by binding-constraint optimization is not implemented.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Current logic is all-or-nothing at each event date:
+\begin{itemize}
+  \item if guideline set passes, model adds the full cap shortfall;
+  \item if guideline set fails, model adds zero.
+\end{itemize}
+No optimizer is run to find a smaller partial top-up that might satisfy constraints. This can make replenishment more conservative than a binding-constraint allocation engine.
+
+\item \textbf{Months-below-half-cap status}
+\paragraph{Parameter text} Configuration toggles exist, but months-below-half-cap stop-event test is not implemented.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This is an explicit known gap versus richer replenishment rule sets.
+
+\item \textbf{Prepayment toggle behavior}
+\paragraph{Parameter text} If disabled or CPR is zero/non-positive, all loans get \texttt{None} prepayment dates.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} When prepayment is enabled (\(CPR>0\)), prepayment acts as an overlay on top of the loan's native amortization rule:
+\begin{itemize}
+  \item before prepayment date, loan follows its configured scheduled profile (bullet or linear);
+  \item from prepayment date onward, balance is forced to zero.
+\end{itemize}
+So prepayment itself is neither ``bullet'' nor ``linear''; it is a state switch to zero balance applied on top of the underlying schedule. Disabling prepayment also enables shared balance caching across paths for performance.
+
+\item \textbf{CPR conversion}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+p_q=1-(1-\texttt{CPR\_ANNUAL})^{1/4}.
+\]
+\paragraph{Explanation} \(p_q\) is quarterly prepayment probability; \(\texttt{CPR\_ANNUAL}\) is annual conditional prepayment rate. Exponent \(1/4\) converts annual survival to quarterly survival under constant-hazard-style compounding.
+Concrete example: if \(\texttt{CPR\_ANNUAL}=8\%\), then
+\[
+p_q=1-(1-0.08)^{1/4}\approx 2.06\%.
+\]
+So in each quarter, each still-live loan has about 2.06\% chance to prepay in that quarter. CPR outside \([0,1]\) is hard error.
+
+\item \textbf{Quarterly prepayment simulation}
+\paragraph{Parameter text} For each live loan and quarter date before maturity, draw \(U\sim U(0,1)\); first \(U<p_q\) is prepayment date.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(U\sim U(0,1)\) denotes a uniform random draw on \((0,1)\), and \(p_q\) is quarterly prepayment probability from CPR conversion. This produces first-hit prepayment timing per loan, per path.
+If a hit occurs in quarter \(q\), loan balance is set to zero from that quarter date onward (full payoff event), regardless of whether the native schedule is bullet or linear. If no hit occurs before maturity, loan simply follows its native schedule to maturity.
+
+\item \textbf{Pathwise prepayment seed policy}
+\paragraph{Parameter text} Seed is \(\texttt{RANDOM\_SEED}+1{,}000{,}000+p\) for path \(p\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(p\) is zero-based simulation path index. The offset keeps prepayment RNG streams reproducible while decoupling them from copula RNG draws.
+
+\item \textbf{Dead-tranche path handling}
+\paragraph{Parameter text} If tranche is dead at as-of on a path, future path cashflows are skipped.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This is the implemented dead-tranche convention at path level.
+
+\item \textbf{Investor scaling convention}
+\paragraph{Parameter text} Full-tranche PV legs are computed first, then multiplied by \texttt{OUR\_PERCENTAGE}.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Tranche death/state tracking remains full-tranche; investor ownership is applied at output scaling.
+
+\item \textbf{NPV aggregation}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+NPV_{\text{MTM}}=PV_{\text{premium}}+PV_{\text{write-down}}+PV_{\text{redemption}}.
+\]
+\paragraph{Explanation} \(PV\) means \emph{present value of one leg} (for example premium leg alone). \(NPV\) means \emph{net present value across all legs} after signs are applied and then summed.
+So:
+\begin{itemize}
+  \item \(PV_{\text{premium}}\): PV of premium cashflows only;
+  \item \(PV_{\text{write-down}}\): PV of write-down leg only (typically negative);
+  \item \(PV_{\text{redemption}}\): PV of redemption leg only;
+  \item \(NPV_{\text{MTM}}\): net sum of those leg PVs.
+\end{itemize}
+Reported values are expectation over Monte Carlo paths.
+
+\item \textbf{Price definitions}
+\paragraph{Parameter text} Clean and dirty are reported per 100 of investor as-of notional.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Formula}
+\[
+Clean=100\cdot \frac{NPV}{N_{\text{asof,ours}}},\quad
+Dirty=100\cdot \frac{NPV+Accrued}{N_{\text{asof,ours}}}.
+\]
+\paragraph{Explanation} \(Clean\) and \(Dirty\) are prices per 100 notional; \(NPV\) is investor-scaled MTM value; \(Accrued\) is accrued premium; \(N_{\text{asof,ours}}\) is investor-owned as-of notional used as denominator.
+Interpretation:
+\begin{itemize}
+  \item Clean price represents value excluding accrued premium since last coupon date.
+  \item Dirty price represents value including accrued premium (``full'' settlement-style value as-of).
+  \item Therefore \(Dirty-Clean = 100\cdot Accrued/N_{\text{asof,ours}}\).
+\end{itemize}
+So if two runs have same risk/cashflow outlook but different accrued amount at as-of, clean can be similar while dirty differs by accrued carry.
+Concrete reading example:
+\begin{itemize}
+  \item If \(Dirty=8\), the as-of full value (including accrued) is \(8\) per \(100\) of investor notional, i.e. \(8\%\) of \(N_{\text{asof,ours}}\).
+  \item Equivalently, \((NPV+Accrued)=0.08\times N_{\text{asof,ours}}\) in currency units.
+  \item If \(Clean=7\) and \(Dirty=8\), then the 1-point difference is accrued premium carry between previous payment date and as-of.
+\end{itemize}
+
+\item \textbf{Zero-notional price fallback}
+\paragraph{Parameter text} If investor as-of notional is non-positive, clean and dirty prices are set to zero.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Avoids NaN/inf artifacts.
+
+\item \textbf{Par spread closed form}
+\paragraph{Parameter text}
+\paragraph{Where in code}\CodeRefs
+\[
+s^*=\frac{PV_{\text{wd,pos}}-PV_{\text{red}}}{PV01}.
+\]
+\paragraph{Explanation} \(s^*\) is par spread; \(PV_{\text{wd,pos}}\) is positive write-down quantity derived from negative write-down cashflow convention; \(PV_{\text{red}}\) is redemption PV; \(PV01\) is premium leg PV sensitivity base at spread \(=1.0\).
+
+\item \textbf{Par spread failure fallback}
+\paragraph{Parameter text} If \(PV01\le 0\), par spread is reported as \(0.0\).
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(PV01\) is denominator in par spread formula; non-positive \(PV01\) would make closed-form par spread undefined or unstable. Solver raises internally; pricing catches and falls back to zero.
+
+\item \textbf{Loss risk metrics}
+\paragraph{Parameter text} Expected loss, VaR99, and ES99 are computed from investor-scaled path tranche-loss distribution.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} ES99 is mean of tail observations above/equal VaR99 threshold.
+
+\item \textbf{Reconciliation table}
+\paragraph{Parameter text} Expected premium/write-down/redemption cashflows are reported by date.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Each date value is path-average of accumulated per-path cashflows.
+
+\item \textbf{Validation pack content}
+\paragraph{Parameter text} Validation pack includes bounds checks, monotonicity check, and convergence check.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Each component reprices model under alternate settings to support sanity validation.
+
+\item \textbf{Bounds checks currently implemented}
+\paragraph{Parameter text} (i) VaR99 loss not above investor notional, (ii) non-negative investor notional, (iii) finite clean/dirty.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} These are practical v1 guards, not exhaustive mathematical proofs.
+
+\item \textbf{Monotonicity check}
+\paragraph{Parameter text} Reprice on spread grid and verify non-decreasing NPV steps.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} \(\Delta NPV\) is stepwise NPV difference between adjacent spread-grid points. The check reports whether each step is non-decreasing.
+
+\item \textbf{Convergence check}
+\paragraph{Parameter text} Reprice over seed and path-count grids; report par spread, NPV, expected loss.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This is a diagnostic hook rather than statistical-confidence module.
+
+\item \textbf{Progress bar}
+\paragraph{Parameter text} Optional progress bar shows path progress and ETA.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Controlled by \texttt{ENABLE\_PROGRESS\_BAR} and update cadence config.
+
+\item \textbf{Continuous activity spinner}
+\paragraph{Parameter text} Optional spinner rotates continuously, including startup phase before path progress visibly advances.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Controlled by \texttt{ENABLE\_ACTIVITY\_SPINNER} and \texttt{ACTIVITY\_SPINNER\_INTERVAL\_SECONDS}.
+
+\item \textbf{Startup liveness behavior}
+\paragraph{Parameter text} Spinner can update while expensive pre-loop work is still running.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This addresses frozen-looking terminal output during long initialization/computation sections.
+
+\item \textbf{Performance caching: amortization}
+\paragraph{Parameter text} Amortization-type normalization uses LRU cache.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Reduces repeated string normalization overhead in large loops.
+
+\item \textbf{Performance caching: replenishment balances}
+\paragraph{Parameter text} Shared event-date balance caches are used across paths when prepayment is disabled.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This provides the largest runtime gain because path-invariant base-balance computations are reused.
+
+\item \textbf{Performance caching: calendars}
+\paragraph{Parameter text} Holiday objects and business-day checks use LRU caching.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Eliminates repeated expensive holiday object construction.
+
+\item \textbf{Intentional v1 simplifications}
+\paragraph{Parameter text} No FX conversion, no fee/expense waterfall, no deal call/unwind layer.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} These are acknowledged out-of-scope items for current model version.
+
+\item \textbf{Replenishment simplification summary}
+\paragraph{Parameter text} All-or-nothing top-up under guideline pass/fail, without optimizer for partial binding allocations.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} This is the main behavior gap versus fully constrained synthetic replenishment optimization.
+
+\item \textbf{Day-count simplification summary}
+\paragraph{Parameter text} ACT/ACT (ICMA) is not implemented due missing coupon-period metadata support.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Selection of this basis currently triggers hard error.
+
+\item \textbf{Configuration source of truth}
+\paragraph{Parameter text} Runtime model reads \texttt{srt\_model\_config.py}.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} Legacy \texttt{srt\_config.py} is not used by the SRT model pipeline.
+
+\item \textbf{Operational interpretation}
+\paragraph{Parameter text} This document is implementation truth for current runtime behavior.
+\paragraph{Where in code}\CodeRefs
+\paragraph{Explanation} If legal/term-sheet text and runtime differ, this file describes what is priced today until code is changed.
+
+\end{enumerate}
+
+\section*{Companion document}
+Compact version: \texttt{SRT\_As\_Coded\_Implementation\_Spec.tex}
+
+\section*{Clarifications requested on Specs 5, 10, 11, 15, 17}
+\textbf{Spec 5 vs Spec 10 (joint calendar vs single currency)}\\
+No conflict. They control different layers:
+\begin{itemize}
+  \item Spec 5: holiday/business-day logic for date adjustments.
+  \item Spec 10: deal currency support and curve selection.
+\end{itemize}
+So: joint calendars are allowed by toggle, and valuation is still single-currency EUR or USD.
+
+\textbf{Spec 11 (required columns) now explicit}\\
+The exact enforced column list is included under Spec 11 above.
+
+\textbf{Spec 15 (turnover parser) and mechanics}\\
+The parser is used to convert categorical turnover labels into numbers for threshold checks. It does not alter default simulation, EAD, tranche loss booking, premium accrual, or discounting. It affects only rules that consume turnover thresholds (for example lowest-turnover eligibility).
+
+\textbf{Spec 11 vs Spec 17}\\
+They are not duplicates. Spec 11 validates tape schema presence. Spec 17 validates rating-value mappability and semantic conversion to external ratings used later by survival lookup.
+
+\end{document}
