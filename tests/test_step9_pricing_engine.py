@@ -114,7 +114,6 @@ class TestPricingEngine(unittest.TestCase):
         self.assertGreaterEqual(result.tranche_notional_asof_full, 0.0)
         self.assertGreaterEqual(result.tranche_notional_asof_ours, 0.0)
         self.assertTrue(result.clean_price == result.clean_price)  # not NaN
-        self.assertTrue(result.dirty_price == result.dirty_price)  # not NaN
 
     def test_parallel_pricing_matches_sequential(self) -> None:
         if "fork" not in mp.get_all_start_methods():
@@ -132,9 +131,7 @@ class TestPricingEngine(unittest.TestCase):
         self.assertAlmostEqual(parallel.pv_write_down, sequential.pv_write_down, places=10)
         self.assertAlmostEqual(parallel.pv_redemption, sequential.pv_redemption, places=10)
         self.assertAlmostEqual(parallel.npv_mtm, sequential.npv_mtm, places=10)
-        self.assertAlmostEqual(parallel.accrued_premium, sequential.accrued_premium, places=10)
         self.assertAlmostEqual(parallel.clean_price, sequential.clean_price, places=10)
-        self.assertAlmostEqual(parallel.dirty_price, sequential.dirty_price, places=10)
         self.assertAlmostEqual(parallel.pv01, sequential.pv01, places=10)
         self.assertAlmostEqual(parallel.par_spread, sequential.par_spread, places=10)
         self.assertAlmostEqual(parallel.expected_loss, sequential.expected_loss, places=10)

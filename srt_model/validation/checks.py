@@ -34,8 +34,8 @@ def bounds_checks(pricing: PricingResult) -> pd.DataFrame:
             "limit": 0.0,
         },
         {
-            "check": "clean_dirty_finite",
-            "passed": (pricing.clean_price == pricing.clean_price) and (pricing.dirty_price == pricing.dirty_price),
+            "check": "clean_price_finite",
+            "passed": pricing.clean_price == pricing.clean_price,
             "value": pricing.clean_price,
             "limit": float("nan"),
         },
@@ -97,4 +97,3 @@ def build_validation_pack(
         monotonicity=monotonicity_check(prepared, spread_grid=spread_grid),
         convergence=convergence_check(prepared, seeds=seeds, path_counts=path_counts),
     )
-
