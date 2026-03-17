@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 from dataclasses import dataclass
 from datetime import date, timedelta
 import threading
@@ -64,6 +65,46 @@ class _ValuationDates:
     protection_end: date
     legal_final: date
     first_payment: date
+
+
+@dataclass(frozen=True)
+class _PathPricingContext:
+    prepared: PreparedInputs
+    dates: _ValuationDates
+    calendar_selection: object
+    start_eff: date
+    payment_dates: tuple[date, ...]
+    quarter_dates: tuple[date, ...]
+    prev_pay_asof: date
+    maturity_dates: tuple[date, ...]
+    replenishment_end_date: date
+    debtor_loans: dict[str, list]
+    basis_days: float
+    enable_prepayment: bool
+    cpr_annual: float
+    prepayment_none_map: dict[str, date | None]
+    static_event_dates: tuple[date, ...]
+    n_ref: float
+    alpha: float
+    our_share: float
+    tau_matrix: np.ndarray
+
+
+@dataclass(frozen=True)
+class _PathChunkResult:
+    start_idx: int
+    pv_premium: np.ndarray
+    pv_write_down: np.ndarray
+    pv_redemption: np.ndarray
+    pv01: np.ndarray
+    accrued_premium: np.ndarray
+    tranche_loss: np.ndarray
+    premium_sum_by_date: dict[date, float]
+    write_down_sum_by_date: dict[date, float]
+    redemption_sum_by_date: dict[date, float]
+
+
+_PATH_PRICING_CONTEXT: _PathPricingContext | None = None
 
 
 class _ProgressBar:
@@ -362,6 +403,291 @@ def _quarter_dates(first_payment: date, legal_final: date, eom_on: bool) -> list
     return out
 
 
+def _resolve_pricing_num_workers(cfg, n_paths_hint: int) -> int:
+    raw = _coerce_int(getattr(cfg, "PRICING_NUM_WORKERS", 1), default=1)
+    if raw == 1:
+        return 1
+    if raw <= 0:
+        raw = max(1, os_cpu_count_or_one())
+    if raw <= 1:
+        return 1
+    if "fork" not in mp.get_all_start_methods():
+        return 1
+    return max(1, min(raw, max(1, int(n_paths_hint))))
+
+
+def os_cpu_count_or_one() -> int:
+    count = mp.cpu_count()
+    return count if count and count > 0 else 1
+
+
+def _path_chunk_ranges(n_paths: int, workers: int) -> list[tuple[int, int]]:
+    if workers <= 1 or n_paths <= 1:
+        return [(0, n_paths)]
+    # Use smaller chunks than the worker count alone so progress can advance
+    # during long parallel runs instead of jumping only a few times.
+    chunk_count = min(n_paths, max(workers * 8, workers))
+    chunk_size = max(1, int(np.ceil(n_paths / chunk_count)))
+    out: list[tuple[int, int]] = []
+    start = 0
+    while start < n_paths:
+        end = min(n_paths, start + chunk_size)
+        out.append((start, end))
+        start = end
+    return out
+
+
+def _merge_cashflow_sums(target: dict[date, float], source: dict[date, float]) -> None:
+    for cf_date, amount in source.items():
+        target[cf_date] = target.get(cf_date, 0.0) + amount
+
+
+def _build_path_context(
+    *,
+    prepared: PreparedInputs,
+    dates: _ValuationDates,
+    calendar_selection,
+    start_eff: date,
+    payment_dates: list[date],
+    quarter_dates: list[date],
+    prev_pay_asof: date,
+    maturity_dates: list[date],
+    replenishment_end_date: date,
+    debtor_loans: dict[str, list],
+    basis_days: float,
+    enable_prepayment: bool,
+    cpr_annual: float,
+    prepayment_none_map: dict[str, date | None],
+    n_ref: float,
+    alpha: float,
+    our_share: float,
+    tau_matrix: np.ndarray,
+) -> _PathPricingContext:
+    static_event_dates = tuple(
+        sorted(
+            {
+                dates.as_of,
+                start_eff,
+                dates.accrual_end,
+                dates.legal_final,
+                *payment_dates,
+                *quarter_dates,
+                *maturity_dates,
+            }
+        )
+    )
+    return _PathPricingContext(
+        prepared=prepared,
+        dates=dates,
+        calendar_selection=calendar_selection,
+        start_eff=start_eff,
+        payment_dates=tuple(payment_dates),
+        quarter_dates=tuple(quarter_dates),
+        prev_pay_asof=prev_pay_asof,
+        maturity_dates=tuple(maturity_dates),
+        replenishment_end_date=replenishment_end_date,
+        debtor_loans=debtor_loans,
+        basis_days=float(basis_days),
+        enable_prepayment=bool(enable_prepayment),
+        cpr_annual=float(cpr_annual),
+        prepayment_none_map=prepayment_none_map,
+        static_event_dates=static_event_dates,
+        n_ref=float(n_ref),
+        alpha=float(alpha),
+        our_share=float(our_share),
+        tau_matrix=np.asarray(tau_matrix, dtype=float),
+    )
+
+
+def _price_path_range(
+    ctx: _PathPricingContext,
+    start_idx: int,
+    end_idx: int,
+    progress_callback=None,
+) -> _PathChunkResult:
+    n_chunk = max(0, end_idx - start_idx)
+    path_pv_prem = np.zeros(n_chunk, dtype=float)
+    path_pv_wd = np.zeros(n_chunk, dtype=float)
+    path_pv_red = np.zeros(n_chunk, dtype=float)
+    path_pv01 = np.zeros(n_chunk, dtype=float)
+    path_accr = np.zeros(n_chunk, dtype=float)
+    path_tranche_loss = np.zeros(n_chunk, dtype=float)
+    prem_sum_by_date: dict[date, float] = {}
+    wd_sum_by_date: dict[date, float] = {}
+    red_sum_by_date: dict[date, float] = {}
+
+    shared_total_balance_cache: dict[date, float] | None = {} if not ctx.enable_prepayment else None
+    shared_all_balance_cache: dict[date, dict[str, float]] | None = {} if not ctx.enable_prepayment else None
+    df = ctx.prepared.discount_curve.df
+    premium_day_count = str(ctx.prepared.config.PREMIUM_DAY_COUNT)
+
+    for offset, p in enumerate(range(start_idx, end_idx)):
+        if ctx.enable_prepayment:
+            rng_prepay = np.random.default_rng(int(ctx.prepared.config.RANDOM_SEED) + 1_000_000 + p)
+            prepayment_date_by_loan = simulate_prepayment_dates(
+                loans=ctx.prepared.loans,
+                quarter_dates=list(ctx.quarter_dates),
+                enable_prepayment=True,
+                cpr_annual=ctx.cpr_annual,
+                rng=rng_prepay,
+            )
+        else:
+            prepayment_date_by_loan = ctx.prepayment_none_map
+
+        losses_by_notice, debtor_notice = _path_losses_by_notice(
+            debtor_loans=ctx.debtor_loans,
+            debtor_ids=ctx.prepared.debtor_ids,
+            tau_years_row=ctx.tau_matrix[p],
+            dates=ctx.dates,
+            calendar_selection=ctx.calendar_selection,
+            prepayment_date_by_loan=prepayment_date_by_loan,
+            basis_days=ctx.basis_days,
+        )
+        sorted_notices = sorted(losses_by_notice.keys())
+        if sorted_notices:
+            event_dates = sorted({*ctx.static_event_dates, *sorted_notices})
+        else:
+            event_dates = list(ctx.static_event_dates)
+
+        repl_result = build_path_pool_balance_schedule(
+            cfg=ctx.prepared.config,
+            loans=ctx.prepared.loans,
+            event_dates=event_dates,
+            as_of_date=ctx.dates.as_of,
+            replenishment_end_date=ctx.replenishment_end_date,
+            cap_amount=float(getattr(ctx.prepared.config, "REPLENISHMENT_CAP_AMOUNT", ctx.n_ref)),
+            prepayment_date_by_loan=prepayment_date_by_loan,
+            debtor_notice_date=debtor_notice,
+            losses_by_notice=losses_by_notice,
+            n_ref_asof=ctx.n_ref,
+            shared_total_balance_cache=shared_total_balance_cache,
+            shared_all_balance_cache=shared_all_balance_cache,
+        )
+        pool_sched_by_date = repl_result.pool_balance_sched_by_date
+
+        n_tr_asof = _notional_at_date(
+            t=ctx.dates.as_of,
+            pool_sched_by_date=pool_sched_by_date,
+            alpha=ctx.alpha,
+            delta_loss_by_notice=losses_by_notice,
+        )
+        if n_tr_asof <= 0.0:
+            if progress_callback is not None:
+                progress_callback(p + 1)
+            continue
+
+        wd_cfs_raw, path_tr_loss_full = _write_down_cashflows_from_losses(
+            losses_by_notice=losses_by_notice,
+            pool_sched_by_date=pool_sched_by_date,
+            alpha=ctx.alpha,
+        )
+        path_tranche_loss[offset] = path_tr_loss_full * ctx.our_share
+        wd_cfs = [(d, cf) for d, cf in wd_cfs_raw if d > ctx.dates.as_of]
+
+        premium_cfs: list[tuple[date, float]] = []
+        pv01_cfs: list[tuple[date, float]] = []
+        prev = ctx.start_eff
+        for pay_date in ctx.payment_dates:
+            if pay_date <= ctx.dates.as_of:
+                continue
+            if pay_date <= prev:
+                prev = pay_date
+                continue
+            notices = [d for d in sorted_notices if prev < d < pay_date]
+
+            def n_tr_at_start(d: date) -> float:
+                return _notional_at_date(
+                    t=d,
+                    pool_sched_by_date=pool_sched_by_date,
+                    alpha=ctx.alpha,
+                    delta_loss_by_notice=losses_by_notice,
+                )
+
+            prem_amt = premium_accrual_piecewise(
+                period_start=prev,
+                period_end=pay_date,
+                notice_dates_in_period=notices,
+                n_tr_at_start_of_date=n_tr_at_start,
+                spread=float(ctx.prepared.config.PREMIUM_SPREAD),
+                premium_day_count=premium_day_count,
+            )
+            pv01_amt = premium_accrual_piecewise(
+                period_start=prev,
+                period_end=pay_date,
+                notice_dates_in_period=notices,
+                n_tr_at_start_of_date=n_tr_at_start,
+                spread=1.0,
+                premium_day_count=premium_day_count,
+            )
+            premium_cfs.append((pay_date, prem_amt))
+            pv01_cfs.append((pay_date, pv01_amt))
+            prev = pay_date
+
+        n_tr_lfm = _notional_at_date(
+            t=ctx.dates.legal_final,
+            pool_sched_by_date=pool_sched_by_date,
+            alpha=ctx.alpha,
+            delta_loss_by_notice=losses_by_notice,
+        )
+        red_cf = redemption_cashflow(n_tr_lfm)
+        red_cfs = [(ctx.dates.legal_final, red_cf)] if ctx.dates.legal_final > ctx.dates.as_of else []
+
+        path_pv_prem[offset] = pv_cashflows(premium_cfs, df)
+        path_pv_wd[offset] = pv_cashflows(wd_cfs, df)
+        path_pv_red[offset] = pv_cashflows(red_cfs, df)
+        path_pv01[offset] = pv_cashflows(pv01_cfs, df)
+
+        for cf_date, amount in premium_cfs:
+            prem_sum_by_date[cf_date] = prem_sum_by_date.get(cf_date, 0.0) + amount * ctx.our_share
+        for cf_date, amount in wd_cfs:
+            wd_sum_by_date[cf_date] = wd_sum_by_date.get(cf_date, 0.0) + amount * ctx.our_share
+        for cf_date, amount in red_cfs:
+            red_sum_by_date[cf_date] = red_sum_by_date.get(cf_date, 0.0) + amount * ctx.our_share
+
+        if ctx.prev_pay_asof < ctx.dates.as_of:
+            notices_accr = [d for d in sorted_notices if ctx.prev_pay_asof < d < ctx.dates.as_of]
+
+            def n_tr_at_start_accr(d: date) -> float:
+                return _notional_at_date(
+                    t=d,
+                    pool_sched_by_date=pool_sched_by_date,
+                    alpha=ctx.alpha,
+                    delta_loss_by_notice=losses_by_notice,
+                )
+
+            path_accr[offset] = premium_accrual_piecewise(
+                period_start=ctx.prev_pay_asof,
+                period_end=ctx.dates.as_of,
+                notice_dates_in_period=notices_accr,
+                n_tr_at_start_of_date=n_tr_at_start_accr,
+                spread=float(ctx.prepared.config.PREMIUM_SPREAD),
+                premium_day_count=premium_day_count,
+            )
+
+        if progress_callback is not None:
+            progress_callback(p + 1)
+
+    return _PathChunkResult(
+        start_idx=start_idx,
+        pv_premium=path_pv_prem,
+        pv_write_down=path_pv_wd,
+        pv_redemption=path_pv_red,
+        pv01=path_pv01,
+        accrued_premium=path_accr,
+        tranche_loss=path_tranche_loss,
+        premium_sum_by_date=prem_sum_by_date,
+        write_down_sum_by_date=wd_sum_by_date,
+        redemption_sum_by_date=red_sum_by_date,
+    )
+
+
+def _price_path_chunk_worker(path_range: tuple[int, int]) -> _PathChunkResult:
+    if _PATH_PRICING_CONTEXT is None:
+        raise RuntimeError("Path pricing worker context is not initialized.")
+    start_idx, end_idx = path_range
+    return _price_path_range(_PATH_PRICING_CONTEXT, start_idx, end_idx)
+
+
 def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     cfg = prepared.config
     spread = float(cfg.PREMIUM_SPREAD)
@@ -410,14 +736,13 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     enable_prepayment = bool(getattr(cfg, "ENABLE_PREPAYMENT", False))
     cpr_annual = float(getattr(cfg, "CPR_ANNUAL", 0.0))
     prepayment_none_map = {loan.loan_id: None for loan in prepared.loans}
-    shared_total_balance_cache: dict[date, float] | None = {} if not enable_prepayment else None
-    shared_all_balance_cache: dict[date, dict[str, float]] | None = {} if not enable_prepayment else None
 
     n_ref = sum(loan.outstanding_principal for loan in prepared.loans)
     n_sched_asof_full = n_ref * tranche_pct
     pool_asof = pool_scheduled_balance(prepared.loans, dates.as_of, dates.as_of)
     alpha = (n_sched_asof_full / pool_asof) if pool_asof > 0.0 else 0.0
 
+    requested_workers = _resolve_pricing_num_workers(cfg, int(getattr(cfg, "NUM_SIMULATIONS", 1)))
     progress_step = _coerce_int(getattr(cfg, "PROGRESS_UPDATE_EVERY_PATHS", 0), default=0)
     spinner_interval = _coerce_float(
         getattr(cfg, "ACTIVITY_SPINNER_INTERVAL_SECONDS", 0.2),
@@ -437,6 +762,28 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     n_paths, _ = tau_matrix.shape
     progress.set_total(n_paths)
     progress.update(0)
+    worker_count = min(requested_workers, max(1, n_paths))
+
+    ctx = _build_path_context(
+        prepared=prepared,
+        dates=dates,
+        calendar_selection=calendar_selection,
+        start_eff=start_eff,
+        payment_dates=payment_dates,
+        quarter_dates=quarter_dates,
+        prev_pay_asof=prev_pay_asof,
+        maturity_dates=maturity_dates,
+        replenishment_end_date=replenishment_end_date,
+        debtor_loans=debtor_loans,
+        basis_days=basis_days,
+        enable_prepayment=enable_prepayment,
+        cpr_annual=cpr_annual,
+        prepayment_none_map=prepayment_none_map,
+        n_ref=n_ref,
+        alpha=alpha,
+        our_share=our_share,
+        tau_matrix=tau_matrix,
+    )
 
     path_pv_prem = np.zeros(n_paths, dtype=float)
     path_pv_wd = np.zeros(n_paths, dtype=float)
@@ -447,163 +794,40 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     prem_sum_by_date: dict[date, float] = {}
     wd_sum_by_date: dict[date, float] = {}
     red_sum_by_date: dict[date, float] = {}
-
-    for p in range(n_paths):
-        if enable_prepayment:
-            rng_prepay = np.random.default_rng(int(cfg.RANDOM_SEED) + 1_000_000 + p)
-            prepayment_date_by_loan = simulate_prepayment_dates(
-                loans=prepared.loans,
-                quarter_dates=quarter_dates,
-                enable_prepayment=True,
-                cpr_annual=cpr_annual,
-                rng=rng_prepay,
-            )
+    try:
+        if worker_count <= 1:
+            chunk = _price_path_range(ctx, 0, n_paths, progress_callback=progress.update)
+            path_pv_prem[:] = chunk.pv_premium
+            path_pv_wd[:] = chunk.pv_write_down
+            path_pv_red[:] = chunk.pv_redemption
+            path_pv01[:] = chunk.pv01
+            path_accr[:] = chunk.accrued_premium
+            path_tranche_loss[:] = chunk.tranche_loss
+            _merge_cashflow_sums(prem_sum_by_date, chunk.premium_sum_by_date)
+            _merge_cashflow_sums(wd_sum_by_date, chunk.write_down_sum_by_date)
+            _merge_cashflow_sums(red_sum_by_date, chunk.redemption_sum_by_date)
         else:
-            prepayment_date_by_loan = prepayment_none_map
-
-        losses_by_notice, debtor_notice = _path_losses_by_notice(
-            debtor_loans=debtor_loans,
-            debtor_ids=prepared.debtor_ids,
-            tau_years_row=tau_matrix[p],
-            dates=dates,
-            calendar_selection=calendar_selection,
-            prepayment_date_by_loan=prepayment_date_by_loan,
-            basis_days=basis_days,
-        )
-        sorted_notices = sorted(losses_by_notice.keys())
-
-        # Spec 90: event grid includes as-of, payment dates, notice dates, accrual end, maturity dates.
-        event_dates = sorted(
-            {
-                dates.as_of,
-                start_eff,
-                dates.accrual_end,
-                dates.legal_final,
-                *payment_dates,
-                *quarter_dates,
-                *sorted_notices,
-                *maturity_dates,
-            }
-        )
-        repl_result = build_path_pool_balance_schedule(
-            cfg=cfg,
-            loans=prepared.loans,
-            event_dates=event_dates,
-            as_of_date=dates.as_of,
-            replenishment_end_date=replenishment_end_date,
-            cap_amount=float(getattr(cfg, "REPLENISHMENT_CAP_AMOUNT", n_ref)),
-            prepayment_date_by_loan=prepayment_date_by_loan,
-            debtor_notice_date=debtor_notice,
-            losses_by_notice=losses_by_notice,
-            n_ref_asof=n_ref,
-            shared_total_balance_cache=shared_total_balance_cache,
-            shared_all_balance_cache=shared_all_balance_cache,
-        )
-        pool_sched_by_date = repl_result.pool_balance_sched_by_date
-
-        n_tr_asof = _notional_at_date(
-            t=dates.as_of,
-            pool_sched_by_date=pool_sched_by_date,
-            alpha=alpha,
-            delta_loss_by_notice=losses_by_notice,
-        )
-
-        # Spec 168: dead tranche convention at as-of.
-        if n_tr_asof <= 0.0:
-            progress.update(p + 1)
-            continue
-
-        wd_cfs_raw, path_tr_loss_full = _write_down_cashflows_from_losses(
-            losses_by_notice=losses_by_notice,
-            pool_sched_by_date=pool_sched_by_date,
-            alpha=alpha,
-        )
-        path_tranche_loss[p] = path_tr_loss_full * our_share
-        wd_cfs = [(d, cf) for d, cf in wd_cfs_raw if d > dates.as_of]
-
-        premium_cfs: list[tuple[date, float]] = []
-        pv01_cfs: list[tuple[date, float]] = []
-        prev = start_eff
-        for pay_date in payment_dates:
-            if pay_date <= dates.as_of:
-                continue
-            if pay_date <= prev:
-                prev = pay_date
-                continue
-            notices = [d for d in sorted_notices if prev < d < pay_date]
-
-            def n_tr_at_start(d: date) -> float:
-                return _notional_at_date(
-                    t=d,
-                    pool_sched_by_date=pool_sched_by_date,
-                    alpha=alpha,
-                    delta_loss_by_notice=losses_by_notice,
-                )
-
-            prem_amt = premium_accrual_piecewise(
-                period_start=prev,
-                period_end=pay_date,
-                notice_dates_in_period=notices,
-                n_tr_at_start_of_date=n_tr_at_start,
-                spread=spread,
-                premium_day_count=str(cfg.PREMIUM_DAY_COUNT),
-            )
-            pv01_amt = premium_accrual_piecewise(
-                period_start=prev,
-                period_end=pay_date,
-                notice_dates_in_period=notices,
-                n_tr_at_start_of_date=n_tr_at_start,
-                spread=1.0,
-                premium_day_count=str(cfg.PREMIUM_DAY_COUNT),
-            )
-            premium_cfs.append((pay_date, prem_amt))
-            pv01_cfs.append((pay_date, pv01_amt))
-            prev = pay_date
-
-        # Spec 164: redemption at legal final on remaining outstanding notional.
-        n_tr_lfm = _notional_at_date(
-            t=dates.legal_final,
-            pool_sched_by_date=pool_sched_by_date,
-            alpha=alpha,
-            delta_loss_by_notice=losses_by_notice,
-        )
-        red_cf = redemption_cashflow(n_tr_lfm)
-        red_cfs = [(dates.legal_final, red_cf)] if dates.legal_final > dates.as_of else []
-
-        df = prepared.discount_curve.df
-        path_pv_prem[p] = pv_cashflows(premium_cfs, df)
-        path_pv_wd[p] = pv_cashflows(wd_cfs, df)
-        path_pv_red[p] = pv_cashflows(red_cfs, df)
-        path_pv01[p] = pv_cashflows(pv01_cfs, df)
-
-        for d, amt in premium_cfs:
-            prem_sum_by_date[d] = prem_sum_by_date.get(d, 0.0) + amt * our_share
-        for d, amt in wd_cfs:
-            wd_sum_by_date[d] = wd_sum_by_date.get(d, 0.0) + amt * our_share
-        for d, amt in red_cfs:
-            red_sum_by_date[d] = red_sum_by_date.get(d, 0.0) + amt * our_share
-
-        # Spec 169: accrued premium from previous payment to as-of (excluding as-of day), split at notice dates.
-        if prev_pay_asof < dates.as_of:
-            notices_accr = [d for d in sorted_notices if prev_pay_asof < d < dates.as_of]
-
-            def n_tr_at_start_accr(d: date) -> float:
-                return _notional_at_date(
-                    t=d,
-                    pool_sched_by_date=pool_sched_by_date,
-                    alpha=alpha,
-                    delta_loss_by_notice=losses_by_notice,
-                )
-
-            path_accr[p] = premium_accrual_piecewise(
-                period_start=prev_pay_asof,
-                period_end=dates.as_of,
-                notice_dates_in_period=notices_accr,
-                n_tr_at_start_of_date=n_tr_at_start_accr,
-                spread=spread,
-                premium_day_count=str(cfg.PREMIUM_DAY_COUNT),
-            )
-        progress.update(p + 1)
+            global _PATH_PRICING_CONTEXT
+            _PATH_PRICING_CONTEXT = ctx
+            completed_paths = 0
+            path_ranges = _path_chunk_ranges(n_paths, worker_count)
+            with mp.get_context("fork").Pool(processes=worker_count) as pool:
+                for chunk in pool.imap_unordered(_price_path_chunk_worker, path_ranges):
+                    chunk_size = len(chunk.pv_premium)
+                    end_idx = chunk.start_idx + chunk_size
+                    path_pv_prem[chunk.start_idx:end_idx] = chunk.pv_premium
+                    path_pv_wd[chunk.start_idx:end_idx] = chunk.pv_write_down
+                    path_pv_red[chunk.start_idx:end_idx] = chunk.pv_redemption
+                    path_pv01[chunk.start_idx:end_idx] = chunk.pv01
+                    path_accr[chunk.start_idx:end_idx] = chunk.accrued_premium
+                    path_tranche_loss[chunk.start_idx:end_idx] = chunk.tranche_loss
+                    _merge_cashflow_sums(prem_sum_by_date, chunk.premium_sum_by_date)
+                    _merge_cashflow_sums(wd_sum_by_date, chunk.write_down_sum_by_date)
+                    _merge_cashflow_sums(red_sum_by_date, chunk.redemption_sum_by_date)
+                    completed_paths += chunk_size
+                    progress.update(completed_paths)
+    finally:
+        _PATH_PRICING_CONTEXT = None
 
     pv_premium_full = float(path_pv_prem.mean())
     pv_wd_full = float(path_pv_wd.mean())
