@@ -36,8 +36,8 @@ def _integration_cfg(tape_path: str) -> SimpleNamespace:
         ISSUER_COUNTRY="GERMANY",
         JOINT_CALENDARS_ENABLED=False,
         JOINT_CALENDAR_COUNTRIES=[],
-        CURRENT_TRANCHE_VALUE=61.0,
-        CURRENT_SRT_TOTAL_VALUE=1000.0,
+        ATTACHMENT_POINT=0.0,
+        DETACHMENT_POINT=0.061,
         TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         INTERNAL_TO_EXTERNAL_RATING={
@@ -165,8 +165,8 @@ class TestPipeline(unittest.TestCase):
                         'ISSUER_COUNTRY = "GERMANY"',
                         "JOINT_CALENDARS_ENABLED = False",
                         "JOINT_CALENDAR_COUNTRIES = []",
-                        "CURRENT_TRANCHE_VALUE = 61.0",
-                        "CURRENT_SRT_TOTAL_VALUE = 1000.0",
+                        "ATTACHMENT_POINT = 0.0",
+                        "DETACHMENT_POINT = 0.061",
                         'TRANCHE_AMORTIZATION_MODE = "PRO_RATA"',
                         "OUR_PERCENTAGE = 0.3",
                     ]

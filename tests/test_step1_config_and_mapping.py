@@ -13,6 +13,7 @@ from srt_model.config import (
     ConfigValidationError,
     load_and_validate_config,
     normalize_tranche_amortization_mode,
+    resolve_tranche_band_points,
     resolve_calendar_selection,
     validate_required_config_fields,
 )
@@ -40,8 +41,8 @@ def _valid_cfg_namespace() -> SimpleNamespace:
         REPLENISHMENT_MODE="SCALAR_TOPUP",
         PREMIUM_DAY_COUNT="ACT/360",
         ISSUER_COUNTRY="Germany",
-        CURRENT_TRANCHE_VALUE=61.0,
-        CURRENT_SRT_TOTAL_VALUE=1000.0,
+        ATTACHMENT_POINT=0.0,
+        DETACHMENT_POINT=0.061,
         TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         JOINT_CALENDARS_ENABLED=False,
@@ -74,6 +75,13 @@ class TestConfigValidation(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             normalize_tranche_amortization_mode("WRONG")
 
+    def test_invalid_tranche_band_points_raise(self) -> None:
+        cfg = _valid_cfg_namespace()
+        cfg.ATTACHMENT_POINT = 0.10
+        cfg.DETACHMENT_POINT = 0.05
+        with self.assertRaises(ConfigValidationError):
+            resolve_tranche_band_points(cfg)
+
     def test_load_and_validate_current_user_config_fails_on_empty_required(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             module_name = "tmp_missing_required_cfg_step1"
@@ -95,8 +103,8 @@ class TestConfigValidation(unittest.TestCase):
                         'REPLENISHMENT_MODE = "SCALAR_TOPUP"',
                         'PREMIUM_DAY_COUNT = "ACT/360"',
                         'ISSUER_COUNTRY = "GERMANY"',
-                        "CURRENT_TRANCHE_VALUE = 61.0",
-                        "CURRENT_SRT_TOTAL_VALUE = 1000.0",
+                        "ATTACHMENT_POINT = 0.0",
+                        "DETACHMENT_POINT = 0.061",
                         'TRANCHE_AMORTIZATION_MODE = "PRO_RATA"',
                         "OUR_PERCENTAGE = 0.3",
                         "JOINT_CALENDARS_ENABLED = False",

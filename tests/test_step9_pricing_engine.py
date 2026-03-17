@@ -32,8 +32,8 @@ def _cfg_for_pricing(tape_path: str, **overrides) -> SimpleNamespace:
         ISSUER_COUNTRY="GERMANY",
         JOINT_CALENDARS_ENABLED=False,
         JOINT_CALENDAR_COUNTRIES=[],
-        CURRENT_TRANCHE_VALUE=61.0,
-        CURRENT_SRT_TOTAL_VALUE=1000.0,
+        ATTACHMENT_POINT=0.0,
+        DETACHMENT_POINT=0.061,
         TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         INTERNAL_TO_EXTERNAL_RATING={
@@ -115,6 +115,14 @@ class TestPricingEngine(unittest.TestCase):
         self.assertGreaterEqual(result.tranche_notional_asof_ours, 0.0)
         self.assertTrue(result.clean_price == result.clean_price)  # not NaN
 
+    def test_attachment_and_detachment_define_selected_tranche_thickness(self) -> None:
+        prepared = build_prepared_inputs_from_cfg(
+            _cfg_for_pricing(self._tmp.name, ATTACHMENT_POINT=0.20, DETACHMENT_POINT=0.40)
+        )
+        result = price_prepared_inputs(prepared)
+        self.assertAlmostEqual(result.tranche_notional_asof_full, 50.0, places=10)
+        self.assertAlmostEqual(result.tranche_notional_asof_ours, 15.0, places=10)
+
     def test_parallel_pricing_matches_sequential(self) -> None:
         if "fork" not in mp.get_all_start_methods():
             self.skipTest("Parallel pricing requires fork support.")
@@ -139,7 +147,7 @@ class TestPricingEngine(unittest.TestCase):
         self.assertAlmostEqual(parallel.es99_loss, sequential.es99_loss, places=10)
         assert_frame_equal(parallel.reconciliation_table, sequential.reconciliation_table)
 
-    def test_sequential_amortization_keeps_junior_flat_until_stack_falls_below_cap(self) -> None:
+    def test_sequential_amortization_keeps_selected_tranche_flat_until_stack_falls_below_band(self) -> None:
         common = dict(
             PROTECTION_START_DATE="2035-01-01",
             PROTECTION_END_DATE="2035-12-31",

@@ -41,8 +41,8 @@ REQUIRED_CONFIG_FIELDS = (
     "REPLENISHMENT_MODE",
     "PREMIUM_DAY_COUNT",
     "ISSUER_COUNTRY",
-    "CURRENT_TRANCHE_VALUE",
-    "CURRENT_SRT_TOTAL_VALUE",
+    "ATTACHMENT_POINT",
+    "DETACHMENT_POINT",
     "OUR_PERCENTAGE",
 )
 
@@ -112,7 +112,7 @@ def resolve_calendar_selection(cfg: Any) -> CalendarSelection:
 
 
 def normalize_tranche_amortization_mode(value: Any) -> str:
-    """Normalize the junior-tranche scheduled amortization mode."""
+    """Normalize the selected-tranche scheduled amortization mode."""
     if _is_empty(value):
         return TRANCHE_AMORTIZATION_MODE_PRO_RATA
 
@@ -135,10 +135,30 @@ def normalize_tranche_amortization_mode(value: Any) -> str:
     return mode
 
 
+def resolve_tranche_band_points(cfg: Any) -> tuple[float, float]:
+    """Parse and validate selected tranche attachment/detachment points."""
+    try:
+        attachment = float(getattr(cfg, "ATTACHMENT_POINT"))
+        detachment = float(getattr(cfg, "DETACHMENT_POINT"))
+    except (TypeError, ValueError, AttributeError):
+        raise ConfigValidationError(
+            "ATTACHMENT_POINT and DETACHMENT_POINT must be numeric decimals in [0,1]."
+        ) from None
+
+    if attachment < 0.0 or attachment > 1.0:
+        raise ConfigValidationError("ATTACHMENT_POINT must be in [0,1].")
+    if detachment < 0.0 or detachment > 1.0:
+        raise ConfigValidationError("DETACHMENT_POINT must be in [0,1].")
+    if detachment <= attachment:
+        raise ConfigValidationError("DETACHMENT_POINT must be greater than ATTACHMENT_POINT.")
+    return float(attachment), float(detachment)
+
+
 def load_and_validate_config(module_name: str = "srt_model_config") -> Any:
     """Import and validate user configuration module."""
     cfg = importlib.import_module(module_name)
     validate_required_config_fields(cfg)
     resolve_calendar_selection(cfg)
+    resolve_tranche_band_points(cfg)
     normalize_tranche_amortization_mode(getattr(cfg, "TRANCHE_AMORTIZATION_MODE", None))
     return cfg

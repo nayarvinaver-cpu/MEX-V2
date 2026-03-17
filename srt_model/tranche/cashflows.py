@@ -11,40 +11,104 @@ from srt_model.config import (
 from srt_model.grid.dates import yearfrac
 
 
-def scheduled_tranche_notional(
-    alpha: float,
-    pool_balance_sched: float,
+def scheduled_tranche_band(
+    *,
+    total_stack_sched: float,
+    total_stack_asof: float,
+    attachment_point: float,
+    detachment_point: float,
     tranche_amortization_mode: str = TRANCHE_AMORTIZATION_MODE_PRO_RATA,
-    junior_cap_amount: float | None = None,
-) -> float:
-    """Scheduled tranche notional before default losses.
-
-    Spec 159: scheduled junior notional is derived from the scheduled total stack.
-    User rule: support both pro-rata and sequential scheduled amortization.
-    """
-    total_sched = max(0.0, float(pool_balance_sched))
+) -> tuple[float, float]:
+    """Scheduled attachment/detachment notionals for the selected tranche."""
+    total_sched = max(0.0, float(total_stack_sched))
+    total_asof = max(0.0, float(total_stack_asof))
+    attach_pct = max(0.0, float(attachment_point))
+    detach_pct = max(attach_pct, float(detachment_point))
     mode = normalize_tranche_amortization_mode(tranche_amortization_mode)
+
     if mode == TRANCHE_AMORTIZATION_MODE_SEQUENTIAL:
-        if junior_cap_amount is None:
-            raise ValueError("junior_cap_amount is required for sequential amortization.")
-        return float(min(max(0.0, float(junior_cap_amount)), total_sched))
-    return float(max(0.0, float(alpha)) * total_sched)
+        attach_asof = attach_pct * total_asof
+        detach_asof = detach_pct * total_asof
+        return float(min(attach_asof, total_sched)), float(min(detach_asof, total_sched))
+
+    return float(attach_pct * total_sched), float(detach_pct * total_sched)
 
 
-def tranche_outstanding_notional(n_sched: float, cum_loss: float) -> float:
-    """Outstanding tranche notional after cumulative losses.
+def scheduled_tranche_notional(
+    *,
+    total_stack_sched: float,
+    total_stack_asof: float,
+    attachment_point: float,
+    detachment_point: float,
+    tranche_amortization_mode: str = TRANCHE_AMORTIZATION_MODE_PRO_RATA,
+) -> float:
+    """Scheduled selected-tranche notional before default losses."""
+    attach_notional, detach_notional = scheduled_tranche_band(
+        total_stack_sched=total_stack_sched,
+        total_stack_asof=total_stack_asof,
+        attachment_point=attachment_point,
+        detachment_point=detachment_point,
+        tranche_amortization_mode=tranche_amortization_mode,
+    )
+    return float(max(detach_notional - attach_notional, 0.0))
 
-    Spec 158: N_tr(t) = max(N_sched(t) - CumLoss(t), 0).
-    """
-    return float(max(n_sched - cum_loss, 0.0))
+
+def cumulative_tranche_loss(
+    *,
+    cumulative_portfolio_loss: float,
+    attachment_notional: float,
+    detachment_notional: float,
+) -> float:
+    """Selected-tranche cumulative loss given cumulative portfolio loss."""
+    attach = max(0.0, float(attachment_notional))
+    detach = max(attach, float(detachment_notional))
+    loss = max(0.0, float(cumulative_portfolio_loss))
+    return float(min(loss, detach) - min(loss, attach))
 
 
-def incremental_tranche_loss(delta_loss: float, n_tr_before: float) -> float:
-    """Loss allocated to junior tranche at event time.
+def tranche_outstanding_notional(
+    *,
+    attachment_notional: float,
+    detachment_notional: float,
+    cumulative_portfolio_loss: float,
+) -> float:
+    """Outstanding selected-tranche notional after cumulative portfolio losses."""
+    attach = max(0.0, float(attachment_notional))
+    detach = max(attach, float(detachment_notional))
+    scheduled = detach - attach
+    return float(
+        max(
+            scheduled
+            - cumulative_tranche_loss(
+                cumulative_portfolio_loss=cumulative_portfolio_loss,
+                attachment_notional=attach,
+                detachment_notional=detach,
+            ),
+            0.0,
+        )
+    )
 
-    Spec 158: DeltaTrLoss(t) = min(DeltaLoss(t), N_tr(t-)).
-    """
-    return float(min(delta_loss, n_tr_before))
+
+def incremental_tranche_loss(
+    *,
+    delta_portfolio_loss: float,
+    cumulative_portfolio_loss_before: float,
+    attachment_notional: float,
+    detachment_notional: float,
+) -> float:
+    """Incremental selected-tranche loss at an event time."""
+    delta = max(0.0, float(delta_portfolio_loss))
+    before = cumulative_tranche_loss(
+        cumulative_portfolio_loss=cumulative_portfolio_loss_before,
+        attachment_notional=attachment_notional,
+        detachment_notional=detachment_notional,
+    )
+    after = cumulative_tranche_loss(
+        cumulative_portfolio_loss=cumulative_portfolio_loss_before + delta,
+        attachment_notional=attachment_notional,
+        detachment_notional=detachment_notional,
+    )
+    return float(max(after - before, 0.0))
 
 
 def write_down_cashflow(delta_tranche_loss: float) -> float:

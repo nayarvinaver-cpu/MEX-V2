@@ -7,7 +7,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from srt_model.config import ConfigValidationError, load_and_validate_config, resolve_calendar_selection
+from srt_model.config import (
+    ConfigValidationError,
+    load_and_validate_config,
+    resolve_calendar_selection,
+    resolve_tranche_band_points,
+)
 from srt_model.credit.copula import simulate_uniforms_one_factor
 from srt_model.credit.default_times import generate_default_time_years
 from srt_model.curves.discount_adapter import DiscountCurveAdapter, load_discount_curve_adapter
@@ -46,6 +51,7 @@ def build_prepared_inputs_from_cfg(cfg: Any) -> PreparedInputs:
     Spec 104/109/110: fail fast on missing/invalid required data.
     """
     resolve_calendar_selection(cfg)
+    resolve_tranche_band_points(cfg)
     as_of = _parse_as_of_date(cfg)
     tape = load_portfolio_tape(cfg.PORTFOLIO_TAPE_PATH, cfg.PORTFOLIO_SHEET_NAME)
     currency = validate_portfolio_currency(tape)
