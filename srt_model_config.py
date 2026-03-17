@@ -68,19 +68,18 @@ JOINT_CALENDAR_COUNTRIES: list[str] = []
 # ---------------------------------------------------------------------------
 # Tranche and position inputs
 # ---------------------------------------------------------------------------
-# Current live notional amount of the full junior tranche at valuation date (as-of), in currency units.
-# This is NOT the initial tranche size at closing; if write-downs/redemptions already happened, this should be the reduced current amount.
-CURRENT_TRANCHE_VALUE = 186_331_781.0
-# Current live total SRT notional at valuation date (as-of), in currency units, for the full transaction stack.
-# The model computes tranche percentage as CURRENT_TRANCHE_VALUE / CURRENT_SRT_TOTAL_VALUE.
-# If you do not have a refreshed current total yet, a temporary starting point is often the initial amount (for this deal, REPLENISHMENT_CAP_AMOUNT below).
-CURRENT_SRT_TOTAL_VALUE = 3_191_131_781.0
-# Scheduled amortization rule for the junior tranche relative to the modeled full SRT stack.
-# - "PRO_RATA": junior scheduled notional stays a fixed share of the total scheduled stack.
-# - "SEQUENTIAL": senior amortizes first; junior stays at its modeled as-of size until the total scheduled stack falls below it, and can refill back up if replenishment later increases the total again.
-TRANCHE_AMORTIZATION_MODE = "SEQUENTIAL"
-# Investor ownership share of the junior tranche used to scale full-tranche cashflows to our position valuation.
-# Example: 0.30 means we economically own 30% of the junior tranche cashflows/losses while tranche death is still tracked on the full tranche.
+# Attachment point of the selected tranche as a decimal of the current live capital structure at AS_OF_DATE.
+# Example: 0.03 means the tranche starts at 3% of the modeled live stack, measured from the bottom.
+ATTACHMENT_POINT = 0.0
+# Detachment point of the selected tranche as a decimal of the current live capital structure at AS_OF_DATE.
+# Example: 0.06 means the tranche ends at 6% of the modeled live stack, measured from the bottom.
+DETACHMENT_POINT = 0.05839050023236881
+# Scheduled amortization rule for the selected tranche relative to the modeled full SRT stack.
+# - "PRO_RATA": attachment and detachment scale proportionally with the total scheduled stack.
+# - "SEQUENTIAL": amortization happens from the top down; the selected tranche is the surviving overlap between its AS_OF_DATE band and the remaining scheduled stack, and can refill back up to that band if replenishment later increases the total again.
+TRANCHE_AMORTIZATION_MODE = "PRO_RATA"
+# Investor ownership share of the selected tranche used to scale full-tranche cashflows to our position valuation.
+# Example: 0.30 means we economically own 30% of the selected tranche cashflows/losses while tranche state is still tracked on the full tranche.
 OUR_PERCENTAGE = 0.30
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import pandas as pd
 from srt_model.config import (
     ConfigValidationError,
     normalize_tranche_amortization_mode,
+    resolve_tranche_band_points,
     resolve_calendar_selection,
 )
 from srt_model.grid.calendar import adjust_modified_following
@@ -29,9 +30,11 @@ from srt_model.pool.replenishment import build_path_pool_balance_schedule
 from srt_model.pv.discounting import pv_cashflows
 from srt_model.pv.par_spread import solve_par_spread_closed_form
 from srt_model.tranche.cashflows import (
+    cumulative_tranche_loss,
     incremental_tranche_loss,
     premium_accrual_piecewise,
     redemption_cashflow,
+    scheduled_tranche_band,
     scheduled_tranche_notional,
     tranche_outstanding_notional,
     write_down_cashflow,
@@ -84,10 +87,10 @@ class _PathPricingContext:
     cpr_annual: float
     prepayment_none_map: dict[str, date | None]
     static_event_dates: tuple[date, ...]
-    n_ref: float
-    alpha: float
+    total_stack_asof: float
+    attachment_point: float
+    detachment_point: float
     tranche_amortization_mode: str
-    junior_notional_cap_full: float
     our_share: float
     tau_matrix: np.ndarray
 
@@ -304,9 +307,10 @@ def _cum_loss_up_to(delta_loss_by_notice: dict[date, float], t: date) -> float:
 def _notional_at_date(
     t: date,
     pool_sched_by_date: dict[date, float],
-    alpha: float,
+    total_stack_asof: float,
+    attachment_point: float,
+    detachment_point: float,
     tranche_amortization_mode: str,
-    junior_notional_cap_full: float,
     delta_loss_by_notice: dict[date, float],
 ) -> float:
     if t in pool_sched_by_date:
@@ -318,14 +322,19 @@ def _notional_at_date(
         else:
             prev = max(d for d in known if d <= t)
             pool_bal = float(pool_sched_by_date[prev])
-    n_sched = scheduled_tranche_notional(
-        alpha=alpha,
-        pool_balance_sched=pool_bal,
+    attach_notional, detach_notional = scheduled_tranche_band(
+        total_stack_sched=pool_bal,
+        total_stack_asof=total_stack_asof,
+        attachment_point=attachment_point,
+        detachment_point=detachment_point,
         tranche_amortization_mode=tranche_amortization_mode,
-        junior_cap_amount=junior_notional_cap_full,
     )
     cum_loss = _cum_loss_up_to(delta_loss_by_notice, t)
-    return tranche_outstanding_notional(n_sched, cum_loss)
+    return tranche_outstanding_notional(
+        attachment_notional=attach_notional,
+        detachment_notional=detach_notional,
+        cumulative_portfolio_loss=cum_loss,
+    )
 
 
 def _path_losses_by_notice(
@@ -380,9 +389,10 @@ def _path_losses_by_notice(
 def _write_down_cashflows_from_losses(
     losses_by_notice: dict[date, float],
     pool_sched_by_date: dict[date, float],
-    alpha: float,
+    total_stack_asof: float,
+    attachment_point: float,
+    detachment_point: float,
     tranche_amortization_mode: str,
-    junior_notional_cap_full: float,
 ) -> tuple[list[tuple[date, float]], float]:
     """Convert portfolio losses into tranche write-down cashflows.
 
@@ -393,16 +403,19 @@ def _write_down_cashflows_from_losses(
     total_tranche_loss = 0.0
     for nd in sorted(losses_by_notice):
         delta_loss = float(losses_by_notice[nd])
-        n_before = tranche_outstanding_notional(
-            scheduled_tranche_notional(
-                alpha=alpha,
-                pool_balance_sched=float(pool_sched_by_date[nd]),
-                tranche_amortization_mode=tranche_amortization_mode,
-                junior_cap_amount=junior_notional_cap_full,
-            ),
-            cum_portfolio_loss,
+        attach_notional, detach_notional = scheduled_tranche_band(
+            total_stack_sched=float(pool_sched_by_date[nd]),
+            total_stack_asof=total_stack_asof,
+            attachment_point=attachment_point,
+            detachment_point=detachment_point,
+            tranche_amortization_mode=tranche_amortization_mode,
         )
-        delta_tr_loss = incremental_tranche_loss(delta_loss=delta_loss, n_tr_before=n_before)
+        delta_tr_loss = incremental_tranche_loss(
+            delta_portfolio_loss=delta_loss,
+            cumulative_portfolio_loss_before=cum_portfolio_loss,
+            attachment_notional=attach_notional,
+            detachment_notional=detach_notional,
+        )
         total_tranche_loss += delta_tr_loss
         cfs.append((nd, write_down_cashflow(delta_tr_loss)))
         cum_portfolio_loss += delta_loss
@@ -472,10 +485,10 @@ def _build_path_context(
     enable_prepayment: bool,
     cpr_annual: float,
     prepayment_none_map: dict[str, date | None],
-    n_ref: float,
-    alpha: float,
+    total_stack_asof: float,
+    attachment_point: float,
+    detachment_point: float,
     tranche_amortization_mode: str,
-    junior_notional_cap_full: float,
     our_share: float,
     tau_matrix: np.ndarray,
 ) -> _PathPricingContext:
@@ -507,10 +520,10 @@ def _build_path_context(
         cpr_annual=float(cpr_annual),
         prepayment_none_map=prepayment_none_map,
         static_event_dates=static_event_dates,
-        n_ref=float(n_ref),
-        alpha=float(alpha),
+        total_stack_asof=float(total_stack_asof),
+        attachment_point=float(attachment_point),
+        detachment_point=float(detachment_point),
         tranche_amortization_mode=str(tranche_amortization_mode),
-        junior_notional_cap_full=float(junior_notional_cap_full),
         our_share=float(our_share),
         tau_matrix=np.asarray(tau_matrix, dtype=float),
     )
@@ -571,11 +584,11 @@ def _price_path_range(
             event_dates=event_dates,
             as_of_date=ctx.dates.as_of,
             replenishment_end_date=ctx.replenishment_end_date,
-            cap_amount=float(getattr(ctx.prepared.config, "REPLENISHMENT_CAP_AMOUNT", ctx.n_ref)),
+            cap_amount=float(getattr(ctx.prepared.config, "REPLENISHMENT_CAP_AMOUNT", ctx.total_stack_asof)),
             prepayment_date_by_loan=prepayment_date_by_loan,
             debtor_notice_date=debtor_notice,
             losses_by_notice=losses_by_notice,
-            n_ref_asof=ctx.n_ref,
+            n_ref_asof=ctx.total_stack_asof,
             shared_total_balance_cache=shared_total_balance_cache,
             shared_all_balance_cache=shared_all_balance_cache,
         )
@@ -584,9 +597,10 @@ def _price_path_range(
         n_tr_asof = _notional_at_date(
             t=ctx.dates.as_of,
             pool_sched_by_date=pool_sched_by_date,
-            alpha=ctx.alpha,
+            total_stack_asof=ctx.total_stack_asof,
+            attachment_point=ctx.attachment_point,
+            detachment_point=ctx.detachment_point,
             tranche_amortization_mode=ctx.tranche_amortization_mode,
-            junior_notional_cap_full=ctx.junior_notional_cap_full,
             delta_loss_by_notice=losses_by_notice,
         )
         if n_tr_asof <= 0.0:
@@ -597,9 +611,10 @@ def _price_path_range(
         wd_cfs_raw, path_tr_loss_full = _write_down_cashflows_from_losses(
             losses_by_notice=losses_by_notice,
             pool_sched_by_date=pool_sched_by_date,
-            alpha=ctx.alpha,
+            total_stack_asof=ctx.total_stack_asof,
+            attachment_point=ctx.attachment_point,
+            detachment_point=ctx.detachment_point,
             tranche_amortization_mode=ctx.tranche_amortization_mode,
-            junior_notional_cap_full=ctx.junior_notional_cap_full,
         )
         path_tranche_loss[offset] = path_tr_loss_full * ctx.our_share
         wd_cfs = [(d, cf) for d, cf in wd_cfs_raw if d > ctx.dates.as_of]
@@ -619,9 +634,10 @@ def _price_path_range(
                 return _notional_at_date(
                     t=d,
                     pool_sched_by_date=pool_sched_by_date,
-                    alpha=ctx.alpha,
+                    total_stack_asof=ctx.total_stack_asof,
+                    attachment_point=ctx.attachment_point,
+                    detachment_point=ctx.detachment_point,
                     tranche_amortization_mode=ctx.tranche_amortization_mode,
-                    junior_notional_cap_full=ctx.junior_notional_cap_full,
                     delta_loss_by_notice=losses_by_notice,
                 )
 
@@ -648,9 +664,10 @@ def _price_path_range(
         n_tr_lfm = _notional_at_date(
             t=ctx.dates.legal_final,
             pool_sched_by_date=pool_sched_by_date,
-            alpha=ctx.alpha,
+            total_stack_asof=ctx.total_stack_asof,
+            attachment_point=ctx.attachment_point,
+            detachment_point=ctx.detachment_point,
             tranche_amortization_mode=ctx.tranche_amortization_mode,
-            junior_notional_cap_full=ctx.junior_notional_cap_full,
             delta_loss_by_notice=losses_by_notice,
         )
         red_cf = redemption_cashflow(n_tr_lfm)
@@ -697,19 +714,7 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     our_share = float(cfg.OUR_PERCENTAGE)
     if our_share < 0.0 or our_share > 1.0:
         raise ConfigValidationError("OUR_PERCENTAGE must be in [0,1].")
-
-    # User rule: derive tranche percentage from current live notionals rather than static initial percentage.
-    current_tranche_value = float(cfg.CURRENT_TRANCHE_VALUE)
-    current_srt_total_value = float(cfg.CURRENT_SRT_TOTAL_VALUE)
-    if current_srt_total_value <= 0.0:
-        raise ConfigValidationError("CURRENT_SRT_TOTAL_VALUE must be > 0.")
-    if current_tranche_value <= 0.0:
-        raise ConfigValidationError("CURRENT_TRANCHE_VALUE must be > 0.")
-    if current_tranche_value > current_srt_total_value:
-        raise ConfigValidationError(
-            "CURRENT_TRANCHE_VALUE cannot exceed CURRENT_SRT_TOTAL_VALUE."
-        )
-    tranche_pct = current_tranche_value / current_srt_total_value
+    attachment_point, detachment_point = resolve_tranche_band_points(cfg)
     tranche_amortization_mode = normalize_tranche_amortization_mode(
         getattr(cfg, "TRANCHE_AMORTIZATION_MODE", None)
     )
@@ -737,10 +742,18 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     cpr_annual = float(getattr(cfg, "CPR_ANNUAL", 0.0))
     prepayment_none_map = {loan.loan_id: None for loan in prepared.loans}
 
-    n_ref = sum(loan.outstanding_principal for loan in prepared.loans)
-    n_sched_asof_full = n_ref * tranche_pct
+    total_stack_asof = sum(loan.outstanding_principal for loan in prepared.loans)
     pool_asof = pool_scheduled_balance(prepared.loans, dates.as_of, dates.as_of)
-    alpha = (n_sched_asof_full / pool_asof) if pool_asof > 0.0 else 0.0
+    if pool_asof <= 0.0:
+        raise ConfigValidationError("As-of scheduled pool balance must be > 0.")
+    total_stack_asof = float(pool_asof)
+    n_sched_asof_full = scheduled_tranche_notional(
+        total_stack_sched=total_stack_asof,
+        total_stack_asof=total_stack_asof,
+        attachment_point=attachment_point,
+        detachment_point=detachment_point,
+        tranche_amortization_mode=tranche_amortization_mode,
+    )
 
     requested_workers = _resolve_pricing_num_workers(cfg, int(getattr(cfg, "NUM_SIMULATIONS", 1)))
     progress_step = _coerce_int(getattr(cfg, "PROGRESS_UPDATE_EVERY_PATHS", 0), default=0)
@@ -778,10 +791,10 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
         enable_prepayment=enable_prepayment,
         cpr_annual=cpr_annual,
         prepayment_none_map=prepayment_none_map,
-        n_ref=n_ref,
-        alpha=alpha,
+        total_stack_asof=total_stack_asof,
+        attachment_point=attachment_point,
+        detachment_point=detachment_point,
         tranche_amortization_mode=tranche_amortization_mode,
-        junior_notional_cap_full=n_sched_asof_full,
         our_share=our_share,
         tau_matrix=tau_matrix,
     )
