@@ -9,6 +9,10 @@ class ConfigValidationError(ValueError):
     """Raised when required user config inputs are missing or invalid."""
 
 
+TRANCHE_AMORTIZATION_MODE_PRO_RATA = "PRO_RATA"
+TRANCHE_AMORTIZATION_MODE_SEQUENTIAL = "SEQUENTIAL"
+
+
 # Spec 13/14/15: allowed calendar set and joint-calendar behavior.
 ALLOWED_CALENDAR_COUNTRIES = {
     "TARGET": "TARGET",
@@ -107,9 +111,34 @@ def resolve_calendar_selection(cfg: Any) -> CalendarSelection:
     )
 
 
+def normalize_tranche_amortization_mode(value: Any) -> str:
+    """Normalize the junior-tranche scheduled amortization mode."""
+    if _is_empty(value):
+        return TRANCHE_AMORTIZATION_MODE_PRO_RATA
+
+    raw = str(value).strip().upper()
+    aliases = {
+        "PRORATA": TRANCHE_AMORTIZATION_MODE_PRO_RATA,
+        "PRO-RATA": TRANCHE_AMORTIZATION_MODE_PRO_RATA,
+        "SEQ": TRANCHE_AMORTIZATION_MODE_SEQUENTIAL,
+    }
+    mode = aliases.get(raw, raw)
+    if mode not in {
+        TRANCHE_AMORTIZATION_MODE_PRO_RATA,
+        TRANCHE_AMORTIZATION_MODE_SEQUENTIAL,
+    }:
+        raise ConfigValidationError(
+            f"Unsupported TRANCHE_AMORTIZATION_MODE '{value}'. "
+            f"Allowed: {TRANCHE_AMORTIZATION_MODE_PRO_RATA}, "
+            f"{TRANCHE_AMORTIZATION_MODE_SEQUENTIAL}."
+        )
+    return mode
+
+
 def load_and_validate_config(module_name: str = "srt_model_config") -> Any:
     """Import and validate user configuration module."""
     cfg = importlib.import_module(module_name)
     validate_required_config_fields(cfg)
     resolve_calendar_selection(cfg)
+    normalize_tranche_amortization_mode(getattr(cfg, "TRANCHE_AMORTIZATION_MODE", None))
     return cfg

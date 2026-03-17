@@ -34,6 +34,7 @@ def _cfg_for_pricing(tape_path: str, **overrides) -> SimpleNamespace:
         JOINT_CALENDAR_COUNTRIES=[],
         CURRENT_TRANCHE_VALUE=61.0,
         CURRENT_SRT_TOTAL_VALUE=1000.0,
+        TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         INTERNAL_TO_EXTERNAL_RATING={
             "2.2": "BBB+",
@@ -140,6 +141,28 @@ class TestPricingEngine(unittest.TestCase):
         self.assertAlmostEqual(parallel.var99_loss, sequential.var99_loss, places=10)
         self.assertAlmostEqual(parallel.es99_loss, sequential.es99_loss, places=10)
         assert_frame_equal(parallel.reconciliation_table, sequential.reconciliation_table)
+
+    def test_sequential_amortization_keeps_junior_flat_until_stack_falls_below_cap(self) -> None:
+        common = dict(
+            PROTECTION_START_DATE="2035-01-01",
+            PROTECTION_END_DATE="2035-12-31",
+            NUM_SIMULATIONS=8,
+        )
+        prepared_pro = build_prepared_inputs_from_cfg(
+            _cfg_for_pricing(self._tmp.name, TRANCHE_AMORTIZATION_MODE="PRO_RATA", **common)
+        )
+        prepared_seq = build_prepared_inputs_from_cfg(
+            _cfg_for_pricing(self._tmp.name, TRANCHE_AMORTIZATION_MODE="SEQUENTIAL", **common)
+        )
+
+        pro_rata = price_prepared_inputs(prepared_pro)
+        sequential = price_prepared_inputs(prepared_seq)
+
+        self.assertAlmostEqual(sequential.tranche_notional_asof_full, pro_rata.tranche_notional_asof_full)
+        self.assertAlmostEqual(pro_rata.pv_write_down, 0.0, places=12)
+        self.assertAlmostEqual(sequential.pv_write_down, 0.0, places=12)
+        self.assertGreater(sequential.pv_premium, pro_rata.pv_premium)
+        self.assertGreater(sequential.pv_redemption, pro_rata.pv_redemption)
 
 
 if __name__ == "__main__":

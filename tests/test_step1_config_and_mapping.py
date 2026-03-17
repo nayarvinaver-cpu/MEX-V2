@@ -12,6 +12,7 @@ import pandas as pd
 from srt_model.config import (
     ConfigValidationError,
     load_and_validate_config,
+    normalize_tranche_amortization_mode,
     resolve_calendar_selection,
     validate_required_config_fields,
 )
@@ -41,6 +42,7 @@ def _valid_cfg_namespace() -> SimpleNamespace:
         ISSUER_COUNTRY="Germany",
         CURRENT_TRANCHE_VALUE=61.0,
         CURRENT_SRT_TOTAL_VALUE=1000.0,
+        TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         JOINT_CALENDARS_ENABLED=False,
         JOINT_CALENDAR_COUNTRIES=[],
@@ -68,6 +70,10 @@ class TestConfigValidation(unittest.TestCase):
         self.assertTrue(selection.joint_enabled)
         self.assertEqual(selection.joint_calendars, ("GERMANY", "UK"))
 
+    def test_invalid_tranche_amortization_mode_raises(self) -> None:
+        with self.assertRaises(ConfigValidationError):
+            normalize_tranche_amortization_mode("WRONG")
+
     def test_load_and_validate_current_user_config_fails_on_empty_required(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             module_name = "tmp_missing_required_cfg_step1"
@@ -91,6 +97,7 @@ class TestConfigValidation(unittest.TestCase):
                         'ISSUER_COUNTRY = "GERMANY"',
                         "CURRENT_TRANCHE_VALUE = 61.0",
                         "CURRENT_SRT_TOTAL_VALUE = 1000.0",
+                        'TRANCHE_AMORTIZATION_MODE = "PRO_RATA"',
                         "OUR_PERCENTAGE = 0.3",
                         "JOINT_CALENDARS_ENABLED = False",
                         "JOINT_CALENDAR_COUNTRIES = []",
