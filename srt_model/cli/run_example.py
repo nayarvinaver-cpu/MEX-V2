@@ -19,9 +19,7 @@ def main() -> None:
     print(f"Expected Loss: {result.expected_loss:,.2f}")
     print(f"VaR99 Loss: {result.var99_loss:,.2f}")
     print(f"ES99 Loss: {result.es99_loss:,.2f}")
-    print(f"Accrued Premium: {result.accrued_premium:,.2f}")
     print(f"Clean Price: {result.clean_price:.6f}")
-    print(f"Dirty Price: {result.dirty_price:.6f}")
 
 
 if __name__ == "__main__":

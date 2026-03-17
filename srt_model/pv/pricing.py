@@ -20,7 +20,6 @@ from srt_model.grid.schedule import (
     build_payment_schedule,
     compute_notice_date,
     effective_accrual_start,
-    previous_payment_date_on_or_before,
 )
 from srt_model.grid.dates import add_months
 from srt_model.pipeline import PreparedInputs, simulate_default_time_matrix
@@ -45,9 +44,7 @@ class PricingResult:
     pv_write_down: float
     pv_redemption: float
     npv_mtm: float
-    accrued_premium: float
     clean_price: float
-    dirty_price: float
     pv01: float
     par_spread: float
     expected_loss: float
@@ -79,7 +76,6 @@ class _PathPricingContext:
     start_eff: date
     payment_dates: tuple[date, ...]
     quarter_dates: tuple[date, ...]
-    prev_pay_asof: date
     maturity_dates: tuple[date, ...]
     replenishment_end_date: date
     debtor_loans: dict[str, list]
@@ -103,7 +99,6 @@ class _PathChunkResult:
     pv_write_down: np.ndarray
     pv_redemption: np.ndarray
     pv01: np.ndarray
-    accrued_premium: np.ndarray
     tranche_loss: np.ndarray
     premium_sum_by_date: dict[date, float]
     write_down_sum_by_date: dict[date, float]
@@ -470,7 +465,6 @@ def _build_path_context(
     start_eff: date,
     payment_dates: list[date],
     quarter_dates: list[date],
-    prev_pay_asof: date,
     maturity_dates: list[date],
     replenishment_end_date: date,
     debtor_loans: dict[str, list],
@@ -505,7 +499,6 @@ def _build_path_context(
         start_eff=start_eff,
         payment_dates=tuple(payment_dates),
         quarter_dates=tuple(quarter_dates),
-        prev_pay_asof=prev_pay_asof,
         maturity_dates=tuple(maturity_dates),
         replenishment_end_date=replenishment_end_date,
         debtor_loans=debtor_loans,
@@ -534,7 +527,6 @@ def _price_path_range(
     path_pv_wd = np.zeros(n_chunk, dtype=float)
     path_pv_red = np.zeros(n_chunk, dtype=float)
     path_pv01 = np.zeros(n_chunk, dtype=float)
-    path_accr = np.zeros(n_chunk, dtype=float)
     path_tranche_loss = np.zeros(n_chunk, dtype=float)
     prem_sum_by_date: dict[date, float] = {}
     wd_sum_by_date: dict[date, float] = {}
@@ -676,28 +668,6 @@ def _price_path_range(
         for cf_date, amount in red_cfs:
             red_sum_by_date[cf_date] = red_sum_by_date.get(cf_date, 0.0) + amount * ctx.our_share
 
-        if ctx.prev_pay_asof < ctx.dates.as_of:
-            notices_accr = [d for d in sorted_notices if ctx.prev_pay_asof < d < ctx.dates.as_of]
-
-            def n_tr_at_start_accr(d: date) -> float:
-                return _notional_at_date(
-                    t=d,
-                    pool_sched_by_date=pool_sched_by_date,
-                    alpha=ctx.alpha,
-                    tranche_amortization_mode=ctx.tranche_amortization_mode,
-                    junior_notional_cap_full=ctx.junior_notional_cap_full,
-                    delta_loss_by_notice=losses_by_notice,
-                )
-
-            path_accr[offset] = premium_accrual_piecewise(
-                period_start=ctx.prev_pay_asof,
-                period_end=ctx.dates.as_of,
-                notice_dates_in_period=notices_accr,
-                n_tr_at_start_of_date=n_tr_at_start_accr,
-                spread=float(ctx.prepared.config.PREMIUM_SPREAD),
-                premium_day_count=premium_day_count,
-            )
-
         if progress_callback is not None:
             progress_callback(p + 1)
 
@@ -707,7 +677,6 @@ def _price_path_range(
         pv_write_down=path_pv_wd,
         pv_redemption=path_pv_red,
         pv01=path_pv01,
-        accrued_premium=path_accr,
         tranche_loss=path_tranche_loss,
         premium_sum_by_date=prem_sum_by_date,
         write_down_sum_by_date=wd_sum_by_date,
@@ -760,12 +729,6 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
         legal_final=dates.legal_final,
         eom_on=bool(cfg.EOM_ON),
     )
-    prev_pay_asof = previous_payment_date_on_or_before(
-        as_of_date=dates.as_of,
-        first_payment_date=dates.first_payment,
-        eom_on=bool(cfg.EOM_ON),
-        calendar_selection=calendar_selection,
-    )
     maturity_dates = [l.maturity_date for l in prepared.loans if l.maturity_date <= dates.legal_final]
     replenishment_end_date = _parse_date(cfg.REPLENISHMENT_END_DATE, "REPLENISHMENT_END_DATE")
     debtor_loans = _build_debtor_loans_map(prepared)
@@ -808,7 +771,6 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
         start_eff=start_eff,
         payment_dates=payment_dates,
         quarter_dates=quarter_dates,
-        prev_pay_asof=prev_pay_asof,
         maturity_dates=maturity_dates,
         replenishment_end_date=replenishment_end_date,
         debtor_loans=debtor_loans,
@@ -828,7 +790,6 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     path_pv_wd = np.zeros(n_paths, dtype=float)
     path_pv_red = np.zeros(n_paths, dtype=float)
     path_pv01 = np.zeros(n_paths, dtype=float)
-    path_accr = np.zeros(n_paths, dtype=float)
     path_tranche_loss = np.zeros(n_paths, dtype=float)
     prem_sum_by_date: dict[date, float] = {}
     wd_sum_by_date: dict[date, float] = {}
@@ -840,7 +801,6 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
             path_pv_wd[:] = chunk.pv_write_down
             path_pv_red[:] = chunk.pv_redemption
             path_pv01[:] = chunk.pv01
-            path_accr[:] = chunk.accrued_premium
             path_tranche_loss[:] = chunk.tranche_loss
             _merge_cashflow_sums(prem_sum_by_date, chunk.premium_sum_by_date)
             _merge_cashflow_sums(wd_sum_by_date, chunk.write_down_sum_by_date)
@@ -858,7 +818,6 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
                     path_pv_wd[chunk.start_idx:end_idx] = chunk.pv_write_down
                     path_pv_red[chunk.start_idx:end_idx] = chunk.pv_redemption
                     path_pv01[chunk.start_idx:end_idx] = chunk.pv01
-                    path_accr[chunk.start_idx:end_idx] = chunk.accrued_premium
                     path_tranche_loss[chunk.start_idx:end_idx] = chunk.tranche_loss
                     _merge_cashflow_sums(prem_sum_by_date, chunk.premium_sum_by_date)
                     _merge_cashflow_sums(wd_sum_by_date, chunk.write_down_sum_by_date)
@@ -872,23 +831,19 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     pv_wd_full = float(path_pv_wd.mean())
     pv_red_full = float(path_pv_red.mean())
     pv01_full = float(path_pv01.mean())
-    accrued_full = float(path_accr.mean())
 
     # Ownership scaling: simulate full tranche state, then scale investor cashflows by OUR_PERCENTAGE.
     pv_premium = pv_premium_full * our_share
     pv_wd = pv_wd_full * our_share
     pv_red = pv_red_full * our_share
     pv01 = pv01_full * our_share
-    accrued = accrued_full * our_share
     npv_mtm = pv_premium + pv_wd + pv_red
 
     n_asof_ours = n_sched_asof_full * our_share
     if n_asof_ours <= 0.0:
         clean = 0.0
-        dirty = 0.0
     else:
         clean = 100.0 * npv_mtm / n_asof_ours
-        dirty = 100.0 * (npv_mtm + accrued) / n_asof_ours
 
     pv_wd_positive = float(np.mean(-path_pv_wd)) * our_share
     try:
@@ -917,9 +872,7 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
         pv_write_down=pv_wd,
         pv_redemption=pv_red,
         npv_mtm=npv_mtm,
-        accrued_premium=accrued,
         clean_price=clean,
-        dirty_price=dirty,
         pv01=pv01,
         par_spread=par_spread,
         expected_loss=expected_loss,
