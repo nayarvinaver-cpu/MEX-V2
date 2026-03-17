@@ -29,6 +29,7 @@ def _cfg(tape_path: str) -> SimpleNamespace:
         PROTECTION_END_DATE="2027-12-31",
         LEGAL_FINAL_MATURITY_DATE="2028-06-30",
         REPLENISHMENT_END_DATE="2026-02-15",
+        REPLENISHMENT_MODE="SCALAR_TOPUP",
         EOM_ON=False,
         PREMIUM_DAY_COUNT="ACT/360",
         ISSUER_COUNTRY="GERMANY",

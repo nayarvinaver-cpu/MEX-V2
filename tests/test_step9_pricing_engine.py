@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 import os
 import tempfile
 from types import SimpleNamespace
 import unittest
 
 import pandas as pd
+from pandas.testing import assert_frame_equal
 
 from srt_model.pipeline import build_prepared_inputs_from_cfg
 from srt_model.pv.pricing import price_prepared_inputs
 
 
-def _cfg_for_pricing(tape_path: str) -> SimpleNamespace:
-    return SimpleNamespace(
+def _cfg_for_pricing(tape_path: str, **overrides) -> SimpleNamespace:
+    base = dict(
         PORTFOLIO_TAPE_PATH=tape_path,
         PORTFOLIO_SHEET_NAME="Portfolio",
         AS_OF_DATE="2025-12-31",
@@ -24,6 +26,7 @@ def _cfg_for_pricing(tape_path: str) -> SimpleNamespace:
         PROTECTION_END_DATE="2027-12-31",
         LEGAL_FINAL_MATURITY_DATE="2028-06-30",
         REPLENISHMENT_END_DATE="2026-02-15",
+        REPLENISHMENT_MODE="SCALAR_TOPUP",
         EOM_ON=False,
         PREMIUM_DAY_COUNT="ACT/360",
         ISSUER_COUNTRY="GERMANY",
@@ -44,10 +47,13 @@ def _cfg_for_pricing(tape_path: str) -> SimpleNamespace:
         DISCOUNT_CURVE_EUR_FILE="eur_quotes.xlsx",
         DISCOUNT_CURVE_USD_FILE="usd_quotes.xlsx",
         NUM_SIMULATIONS=64,
+        PRICING_NUM_WORKERS=1,
         RHO=0.1,
         RANDOM_SEED=42,
         TAU_YEAR_BASIS_DAYS=365.25,
     )
+    base.update(overrides)
+    return SimpleNamespace(**base)
 
 
 class TestPricingEngine(unittest.TestCase):
@@ -108,6 +114,32 @@ class TestPricingEngine(unittest.TestCase):
         self.assertGreaterEqual(result.tranche_notional_asof_ours, 0.0)
         self.assertTrue(result.clean_price == result.clean_price)  # not NaN
         self.assertTrue(result.dirty_price == result.dirty_price)  # not NaN
+
+    def test_parallel_pricing_matches_sequential(self) -> None:
+        if "fork" not in mp.get_all_start_methods():
+            self.skipTest("Parallel pricing requires fork support.")
+
+        prepared_seq = build_prepared_inputs_from_cfg(_cfg_for_pricing(self._tmp.name))
+        prepared_par = build_prepared_inputs_from_cfg(
+            _cfg_for_pricing(self._tmp.name, PRICING_NUM_WORKERS=2)
+        )
+
+        sequential = price_prepared_inputs(prepared_seq)
+        parallel = price_prepared_inputs(prepared_par)
+
+        self.assertAlmostEqual(parallel.pv_premium, sequential.pv_premium, places=10)
+        self.assertAlmostEqual(parallel.pv_write_down, sequential.pv_write_down, places=10)
+        self.assertAlmostEqual(parallel.pv_redemption, sequential.pv_redemption, places=10)
+        self.assertAlmostEqual(parallel.npv_mtm, sequential.npv_mtm, places=10)
+        self.assertAlmostEqual(parallel.accrued_premium, sequential.accrued_premium, places=10)
+        self.assertAlmostEqual(parallel.clean_price, sequential.clean_price, places=10)
+        self.assertAlmostEqual(parallel.dirty_price, sequential.dirty_price, places=10)
+        self.assertAlmostEqual(parallel.pv01, sequential.pv01, places=10)
+        self.assertAlmostEqual(parallel.par_spread, sequential.par_spread, places=10)
+        self.assertAlmostEqual(parallel.expected_loss, sequential.expected_loss, places=10)
+        self.assertAlmostEqual(parallel.var99_loss, sequential.var99_loss, places=10)
+        self.assertAlmostEqual(parallel.es99_loss, sequential.es99_loss, places=10)
+        assert_frame_equal(parallel.reconciliation_table, sequential.reconciliation_table)
 
 
 if __name__ == "__main__":
