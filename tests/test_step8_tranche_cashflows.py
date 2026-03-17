@@ -25,6 +25,39 @@ class TestTrancheCashflows(unittest.TestCase):
         self.assertAlmostEqual(write_down_cashflow(7.5), -7.5)
         self.assertAlmostEqual(redemption_cashflow(33.0), 33.0)
 
+    def test_sequential_amortization_uses_modeled_asof_cap(self) -> None:
+        n_sched = scheduled_tranche_notional(
+            alpha=0.06,
+            pool_balance_sched=1_000.0,
+            tranche_amortization_mode="SEQUENTIAL",
+            junior_cap_amount=60.0,
+        )
+        self.assertAlmostEqual(n_sched, 60.0)
+
+        n_sched_below_cap = scheduled_tranche_notional(
+            alpha=0.06,
+            pool_balance_sched=40.0,
+            tranche_amortization_mode="SEQUENTIAL",
+            junior_cap_amount=60.0,
+        )
+        self.assertAlmostEqual(n_sched_below_cap, 40.0)
+
+    def test_sequential_amortization_can_refill_to_cap(self) -> None:
+        dipped = scheduled_tranche_notional(
+            alpha=0.06,
+            pool_balance_sched=50.0,
+            tranche_amortization_mode="SEQUENTIAL",
+            junior_cap_amount=60.0,
+        )
+        refilled = scheduled_tranche_notional(
+            alpha=0.06,
+            pool_balance_sched=90.0,
+            tranche_amortization_mode="SEQUENTIAL",
+            junior_cap_amount=60.0,
+        )
+        self.assertAlmostEqual(dipped, 50.0)
+        self.assertAlmostEqual(refilled, 60.0)
+
     def test_piecewise_premium_split_at_notice(self) -> None:
         start = date(2025, 1, 1)
         end = date(2025, 4, 1)
@@ -47,4 +80,3 @@ class TestTrancheCashflows(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

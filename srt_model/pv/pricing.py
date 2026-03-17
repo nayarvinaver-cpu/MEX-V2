@@ -10,7 +10,11 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from srt_model.config import ConfigValidationError, resolve_calendar_selection
+from srt_model.config import (
+    ConfigValidationError,
+    normalize_tranche_amortization_mode,
+    resolve_calendar_selection,
+)
 from srt_model.grid.calendar import adjust_modified_following
 from srt_model.grid.schedule import (
     build_payment_schedule,
@@ -86,6 +90,8 @@ class _PathPricingContext:
     static_event_dates: tuple[date, ...]
     n_ref: float
     alpha: float
+    tranche_amortization_mode: str
+    junior_notional_cap_full: float
     our_share: float
     tau_matrix: np.ndarray
 
@@ -304,6 +310,8 @@ def _notional_at_date(
     t: date,
     pool_sched_by_date: dict[date, float],
     alpha: float,
+    tranche_amortization_mode: str,
+    junior_notional_cap_full: float,
     delta_loss_by_notice: dict[date, float],
 ) -> float:
     if t in pool_sched_by_date:
@@ -315,7 +323,12 @@ def _notional_at_date(
         else:
             prev = max(d for d in known if d <= t)
             pool_bal = float(pool_sched_by_date[prev])
-    n_sched = scheduled_tranche_notional(alpha, pool_bal)
+    n_sched = scheduled_tranche_notional(
+        alpha=alpha,
+        pool_balance_sched=pool_bal,
+        tranche_amortization_mode=tranche_amortization_mode,
+        junior_cap_amount=junior_notional_cap_full,
+    )
     cum_loss = _cum_loss_up_to(delta_loss_by_notice, t)
     return tranche_outstanding_notional(n_sched, cum_loss)
 
@@ -373,6 +386,8 @@ def _write_down_cashflows_from_losses(
     losses_by_notice: dict[date, float],
     pool_sched_by_date: dict[date, float],
     alpha: float,
+    tranche_amortization_mode: str,
+    junior_notional_cap_full: float,
 ) -> tuple[list[tuple[date, float]], float]:
     """Convert portfolio losses into tranche write-down cashflows.
 
@@ -384,7 +399,12 @@ def _write_down_cashflows_from_losses(
     for nd in sorted(losses_by_notice):
         delta_loss = float(losses_by_notice[nd])
         n_before = tranche_outstanding_notional(
-            scheduled_tranche_notional(alpha, float(pool_sched_by_date[nd])),
+            scheduled_tranche_notional(
+                alpha=alpha,
+                pool_balance_sched=float(pool_sched_by_date[nd]),
+                tranche_amortization_mode=tranche_amortization_mode,
+                junior_cap_amount=junior_notional_cap_full,
+            ),
             cum_portfolio_loss,
         )
         delta_tr_loss = incremental_tranche_loss(delta_loss=delta_loss, n_tr_before=n_before)
@@ -460,6 +480,8 @@ def _build_path_context(
     prepayment_none_map: dict[str, date | None],
     n_ref: float,
     alpha: float,
+    tranche_amortization_mode: str,
+    junior_notional_cap_full: float,
     our_share: float,
     tau_matrix: np.ndarray,
 ) -> _PathPricingContext:
@@ -494,6 +516,8 @@ def _build_path_context(
         static_event_dates=static_event_dates,
         n_ref=float(n_ref),
         alpha=float(alpha),
+        tranche_amortization_mode=str(tranche_amortization_mode),
+        junior_notional_cap_full=float(junior_notional_cap_full),
         our_share=float(our_share),
         tau_matrix=np.asarray(tau_matrix, dtype=float),
     )
@@ -569,6 +593,8 @@ def _price_path_range(
             t=ctx.dates.as_of,
             pool_sched_by_date=pool_sched_by_date,
             alpha=ctx.alpha,
+            tranche_amortization_mode=ctx.tranche_amortization_mode,
+            junior_notional_cap_full=ctx.junior_notional_cap_full,
             delta_loss_by_notice=losses_by_notice,
         )
         if n_tr_asof <= 0.0:
@@ -580,6 +606,8 @@ def _price_path_range(
             losses_by_notice=losses_by_notice,
             pool_sched_by_date=pool_sched_by_date,
             alpha=ctx.alpha,
+            tranche_amortization_mode=ctx.tranche_amortization_mode,
+            junior_notional_cap_full=ctx.junior_notional_cap_full,
         )
         path_tranche_loss[offset] = path_tr_loss_full * ctx.our_share
         wd_cfs = [(d, cf) for d, cf in wd_cfs_raw if d > ctx.dates.as_of]
@@ -600,6 +628,8 @@ def _price_path_range(
                     t=d,
                     pool_sched_by_date=pool_sched_by_date,
                     alpha=ctx.alpha,
+                    tranche_amortization_mode=ctx.tranche_amortization_mode,
+                    junior_notional_cap_full=ctx.junior_notional_cap_full,
                     delta_loss_by_notice=losses_by_notice,
                 )
 
@@ -627,6 +657,8 @@ def _price_path_range(
             t=ctx.dates.legal_final,
             pool_sched_by_date=pool_sched_by_date,
             alpha=ctx.alpha,
+            tranche_amortization_mode=ctx.tranche_amortization_mode,
+            junior_notional_cap_full=ctx.junior_notional_cap_full,
             delta_loss_by_notice=losses_by_notice,
         )
         red_cf = redemption_cashflow(n_tr_lfm)
@@ -652,6 +684,8 @@ def _price_path_range(
                     t=d,
                     pool_sched_by_date=pool_sched_by_date,
                     alpha=ctx.alpha,
+                    tranche_amortization_mode=ctx.tranche_amortization_mode,
+                    junior_notional_cap_full=ctx.junior_notional_cap_full,
                     delta_loss_by_notice=losses_by_notice,
                 )
 
@@ -707,6 +741,9 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
             "CURRENT_TRANCHE_VALUE cannot exceed CURRENT_SRT_TOTAL_VALUE."
         )
     tranche_pct = current_tranche_value / current_srt_total_value
+    tranche_amortization_mode = normalize_tranche_amortization_mode(
+        getattr(cfg, "TRANCHE_AMORTIZATION_MODE", None)
+    )
 
     dates, calendar_selection = _build_valuation_dates(prepared)
     start_eff = effective_accrual_start(dates.as_of, dates.accrual_start)
@@ -781,6 +818,8 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
         prepayment_none_map=prepayment_none_map,
         n_ref=n_ref,
         alpha=alpha,
+        tranche_amortization_mode=tranche_amortization_mode,
+        junior_notional_cap_full=n_sched_asof_full,
         our_share=our_share,
         tau_matrix=tau_matrix,
     )

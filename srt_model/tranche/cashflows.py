@@ -3,15 +3,32 @@ from __future__ import annotations
 from datetime import date
 from typing import Callable, Iterable
 
+from srt_model.config import (
+    TRANCHE_AMORTIZATION_MODE_PRO_RATA,
+    TRANCHE_AMORTIZATION_MODE_SEQUENTIAL,
+    normalize_tranche_amortization_mode,
+)
 from srt_model.grid.dates import yearfrac
 
 
-def scheduled_tranche_notional(alpha: float, pool_balance_sched: float) -> float:
+def scheduled_tranche_notional(
+    alpha: float,
+    pool_balance_sched: float,
+    tranche_amortization_mode: str = TRANCHE_AMORTIZATION_MODE_PRO_RATA,
+    junior_cap_amount: float | None = None,
+) -> float:
     """Scheduled tranche notional before default losses.
 
-    Spec 159: N_sched(t) = alpha * PoolBal_sched(t).
+    Spec 159: scheduled junior notional is derived from the scheduled total stack.
+    User rule: support both pro-rata and sequential scheduled amortization.
     """
-    return float(alpha * pool_balance_sched)
+    total_sched = max(0.0, float(pool_balance_sched))
+    mode = normalize_tranche_amortization_mode(tranche_amortization_mode)
+    if mode == TRANCHE_AMORTIZATION_MODE_SEQUENTIAL:
+        if junior_cap_amount is None:
+            raise ValueError("junior_cap_amount is required for sequential amortization.")
+        return float(min(max(0.0, float(junior_cap_amount)), total_sched))
+    return float(max(0.0, float(alpha)) * total_sched)
 
 
 def tranche_outstanding_notional(n_sched: float, cum_loss: float) -> float:
@@ -62,4 +79,3 @@ def premium_accrual_piecewise(
         base = n_tr_at_start_of_date(a)
         total += spread * yf * base
     return float(total)
-

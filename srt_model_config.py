@@ -75,6 +75,10 @@ CURRENT_TRANCHE_VALUE = 186_331_781.0
 # The model computes tranche percentage as CURRENT_TRANCHE_VALUE / CURRENT_SRT_TOTAL_VALUE.
 # If you do not have a refreshed current total yet, a temporary starting point is often the initial amount (for this deal, REPLENISHMENT_CAP_AMOUNT below).
 CURRENT_SRT_TOTAL_VALUE = 3_191_131_781.0
+# Scheduled amortization rule for the junior tranche relative to the modeled full SRT stack.
+# - "PRO_RATA": junior scheduled notional stays a fixed share of the total scheduled stack.
+# - "SEQUENTIAL": senior amortizes first; junior stays at its modeled as-of size until the total scheduled stack falls below it, and can refill back up if replenishment later increases the total again.
+TRANCHE_AMORTIZATION_MODE = "SEQUENTIAL"
 # Investor ownership share of the junior tranche used to scale full-tranche cashflows to our position valuation.
 # Example: 0.30 means we economically own 30% of the junior tranche cashflows/losses while tranche death is still tracked on the full tranche.
 OUR_PERCENTAGE = 0.30

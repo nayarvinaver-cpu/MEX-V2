@@ -38,6 +38,7 @@ def _integration_cfg(tape_path: str) -> SimpleNamespace:
         JOINT_CALENDAR_COUNTRIES=[],
         CURRENT_TRANCHE_VALUE=61.0,
         CURRENT_SRT_TOTAL_VALUE=1000.0,
+        TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         INTERNAL_TO_EXTERNAL_RATING={
             "1.2": "AA+",
@@ -166,6 +167,7 @@ class TestPipeline(unittest.TestCase):
                         "JOINT_CALENDAR_COUNTRIES = []",
                         "CURRENT_TRANCHE_VALUE = 61.0",
                         "CURRENT_SRT_TOTAL_VALUE = 1000.0",
+                        'TRANCHE_AMORTIZATION_MODE = "PRO_RATA"',
                         "OUR_PERCENTAGE = 0.3",
                     ]
                 )
