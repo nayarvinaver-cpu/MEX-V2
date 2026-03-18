@@ -12,6 +12,7 @@ import pandas as pd
 from srt_model.config import (
     ConfigValidationError,
     load_and_validate_config,
+    normalize_default_timing_mode,
     normalize_tranche_amortization_mode,
     resolve_tranche_band_points,
     resolve_calendar_selection,
@@ -43,6 +44,7 @@ def _valid_cfg_namespace() -> SimpleNamespace:
         ISSUER_COUNTRY="Germany",
         ATTACHMENT_POINT=0.0,
         DETACHMENT_POINT=0.061,
+        DEFAULT_TIMING_MODE="CONTINUOUS",
         TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         JOINT_CALENDARS_ENABLED=False,
@@ -75,6 +77,10 @@ class TestConfigValidation(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             normalize_tranche_amortization_mode("WRONG")
 
+    def test_invalid_default_timing_mode_raises(self) -> None:
+        with self.assertRaises(ConfigValidationError):
+            normalize_default_timing_mode("WRONG")
+
     def test_invalid_tranche_band_points_raise(self) -> None:
         cfg = _valid_cfg_namespace()
         cfg.ATTACHMENT_POINT = 0.10
@@ -105,6 +111,7 @@ class TestConfigValidation(unittest.TestCase):
                         'ISSUER_COUNTRY = "GERMANY"',
                         "ATTACHMENT_POINT = 0.0",
                         "DETACHMENT_POINT = 0.061",
+                        'DEFAULT_TIMING_MODE = "CONTINUOUS"',
                         'TRANCHE_AMORTIZATION_MODE = "PRO_RATA"',
                         "OUR_PERCENTAGE = 0.3",
                         "JOINT_CALENDARS_ENABLED = False",

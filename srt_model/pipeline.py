@@ -10,6 +10,7 @@ import pandas as pd
 from srt_model.config import (
     ConfigValidationError,
     load_and_validate_config,
+    normalize_default_timing_mode,
     resolve_calendar_selection,
     resolve_tranche_band_points,
 )
@@ -52,6 +53,7 @@ def build_prepared_inputs_from_cfg(cfg: Any) -> PreparedInputs:
     """
     resolve_calendar_selection(cfg)
     resolve_tranche_band_points(cfg)
+    normalize_default_timing_mode(getattr(cfg, "DEFAULT_TIMING_MODE", None))
     as_of = _parse_as_of_date(cfg)
     tape = load_portfolio_tape(cfg.PORTFOLIO_TAPE_PATH, cfg.PORTFOLIO_SHEET_NAME)
     currency = validate_portfolio_currency(tape)
