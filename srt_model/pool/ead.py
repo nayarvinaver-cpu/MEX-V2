@@ -64,7 +64,7 @@ def ead_at_default(
 ) -> float:
     """Exposure-at-default frozen at default date.
 
-    Spec 57/58: EAD is evaluated at default date and then frozen through notice lag.
+    Spec 57/58: EAD is evaluated at default date and then frozen at that amount.
     """
     return projected_balance_with_prepayment(
         loan=loan,

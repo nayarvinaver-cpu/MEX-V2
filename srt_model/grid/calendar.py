@@ -68,6 +68,14 @@ def adjust_preceding(d: date, selection: CalendarSelection) -> date:
     return out
 
 
+def adjust_following(d: date, selection: CalendarSelection) -> date:
+    """Adjust date using Following convention."""
+    out = d
+    while not is_business_day(out, selection):
+        out = out + timedelta(days=1)
+    return out
+
+
 def adjust_modified_following(d: date, selection: CalendarSelection) -> date:
     """Adjust date using Modified Following convention.
 

@@ -4,9 +4,9 @@ from datetime import date
 import unittest
 
 from srt_model.config import CalendarSelection
-from srt_model.grid.calendar import adjust_modified_following, adjust_preceding, is_business_day
+from srt_model.grid.calendar import adjust_following, adjust_modified_following, adjust_preceding, is_business_day
 from srt_model.grid.dates import add_months
-from srt_model.grid.schedule import build_payment_schedule, compute_notice_date
+from srt_model.grid.schedule import build_payment_schedule, compute_default_event_date
 
 
 GERMANY_CAL = CalendarSelection(base_calendar="GERMANY", joint_enabled=False, joint_calendars=())
@@ -31,6 +31,7 @@ class TestCalendarAdjustments(unittest.TestCase):
         sat = date(2026, 1, 3)
         self.assertFalse(is_business_day(sat, GERMANY_CAL))
         self.assertEqual(adjust_preceding(sat, GERMANY_CAL), date(2026, 1, 2))
+        self.assertEqual(adjust_following(sat, GERMANY_CAL), date(2026, 1, 5))
         self.assertEqual(adjust_modified_following(sat, GERMANY_CAL), date(2026, 1, 5))
 
 
@@ -48,15 +49,13 @@ class TestScheduleBuilder(unittest.TestCase):
         self.assertIn(date(2025, 6, 30), dates)
         self.assertEqual(dates[-1], date(2025, 8, 15))
 
-    def test_notice_date_adjust_and_cap(self) -> None:
-        notice = compute_notice_date(
+    def test_default_event_date_adjusts_following(self) -> None:
+        default_event = compute_default_event_date(
             default_date=date(2026, 1, 31),
-            legal_final_date=date(2026, 2, 20),
             calendar_selection=GERMANY_CAL,
         )
-        self.assertEqual(notice, date(2026, 2, 20))
+        self.assertEqual(default_event, date(2026, 2, 2))
 
 
 if __name__ == "__main__":
     unittest.main()
-

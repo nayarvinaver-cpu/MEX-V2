@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from srt_model.config import ConfigValidationError
-from srt_model.grid.calendar import adjust_modified_following, adjust_preceding
+from srt_model.grid.calendar import adjust_following, adjust_modified_following
 from srt_model.grid.dates import add_months
 
 
@@ -49,17 +49,9 @@ def build_payment_schedule(
     return out
 
 
-def compute_notice_date(default_date: date, legal_final_date: date, calendar_selection) -> date:
-    """Compute adjusted/capped Notice Date from default date.
-
-    Spec 103/105/107/109/111/179:
-    NoticeRaw = tau + 1M (calendar month with day clamp), adjust with Preceding,
-    adjust LFM with Modified Following, then cap notice <= adjusted LFM.
-    """
-    notice_raw = add_months(default_date, 1, eom_on=False)
-    adjusted_notice = adjust_preceding(notice_raw, calendar_selection)
-    adjusted_lfm = adjust_modified_following(legal_final_date, calendar_selection)
-    return min(adjusted_notice, adjusted_lfm)
+def compute_default_event_date(default_date: date, calendar_selection) -> date:
+    """Compute business-day-adjusted default event date from raw simulated default date."""
+    return adjust_following(default_date, calendar_selection)
 
 
 def previous_payment_date_on_or_before(

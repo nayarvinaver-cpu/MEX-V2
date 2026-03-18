@@ -113,10 +113,10 @@ class TestTrancheCashflows(unittest.TestCase):
         self.assertAlmostEqual(dipped, 15.0)
         self.assertAlmostEqual(refilled, 18.0)
 
-    def test_piecewise_premium_split_at_notice(self) -> None:
+    def test_piecewise_premium_split_at_default_event(self) -> None:
         start = date(2025, 1, 1)
         end = date(2025, 4, 1)
-        notice = [date(2025, 2, 1)]
+        events = [date(2025, 2, 1)]
 
         def n_tr_at(d: date) -> float:
             return 100.0 if d < date(2025, 2, 1) else 80.0
@@ -124,7 +124,7 @@ class TestTrancheCashflows(unittest.TestCase):
         prem = premium_accrual_piecewise(
             period_start=start,
             period_end=end,
-            notice_dates_in_period=notice,
+            event_dates_in_period=events,
             n_tr_at_start_of_date=n_tr_at,
             spread=0.10,
             premium_day_count="ACT/360",

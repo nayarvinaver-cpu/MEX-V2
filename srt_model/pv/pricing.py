@@ -19,7 +19,7 @@ from srt_model.config import (
 from srt_model.grid.calendar import adjust_modified_following
 from srt_model.grid.schedule import (
     build_payment_schedule,
-    compute_notice_date,
+    compute_default_event_date,
     effective_accrual_start,
 )
 from srt_model.grid.dates import add_months
@@ -300,8 +300,8 @@ def _build_debtor_loans_map(prepared: PreparedInputs):
     return out
 
 
-def _cum_loss_up_to(delta_loss_by_notice: dict[date, float], t: date) -> float:
-    return float(sum(loss for nd, loss in delta_loss_by_notice.items() if nd <= t))
+def _cum_loss_up_to(delta_loss_by_event_date: dict[date, float], t: date) -> float:
+    return float(sum(loss for event_date, loss in delta_loss_by_event_date.items() if event_date <= t))
 
 
 def _notional_at_date(
@@ -311,7 +311,7 @@ def _notional_at_date(
     attachment_point: float,
     detachment_point: float,
     tranche_amortization_mode: str,
-    delta_loss_by_notice: dict[date, float],
+    delta_loss_by_event_date: dict[date, float],
 ) -> float:
     if t in pool_sched_by_date:
         pool_bal = float(pool_sched_by_date[t])
@@ -329,7 +329,7 @@ def _notional_at_date(
         detachment_point=detachment_point,
         tranche_amortization_mode=tranche_amortization_mode,
     )
-    cum_loss = _cum_loss_up_to(delta_loss_by_notice, t)
+    cum_loss = _cum_loss_up_to(delta_loss_by_event_date, t)
     return tranche_outstanding_notional(
         attachment_notional=attach_notional,
         detachment_notional=detach_notional,
@@ -337,7 +337,7 @@ def _notional_at_date(
     )
 
 
-def _path_losses_by_notice(
+def _path_losses_by_default_event(
     debtor_loans: dict[str, list],
     debtor_ids: list[str],
     tau_years_row: np.ndarray,
@@ -347,7 +347,7 @@ def _path_losses_by_notice(
     basis_days: float,
 ) -> tuple[dict[date, float], dict[str, date]]:
     losses: dict[date, float] = {}
-    debtor_notice: dict[str, date] = {}
+    debtor_default_event: dict[str, date] = {}
     # Spec 99/140/262/312: coverage based on default date in [ProtStart, ProtEnd].
     for j, debtor_id in enumerate(debtor_ids):
         tau_date = _tau_years_to_date(dates.as_of, float(tau_years_row[j]), basis_days=basis_days)
@@ -356,9 +356,8 @@ def _path_losses_by_notice(
         if tau_date < dates.protection_start or tau_date > dates.protection_end:
             continue
 
-        notice_date = compute_notice_date(
+        default_event_date = compute_default_event_date(
             default_date=tau_date,
-            legal_final_date=dates.legal_final,
             calendar_selection=calendar_selection,
         )
 
@@ -380,14 +379,17 @@ def _path_losses_by_notice(
             total_loss += ead * lgd
 
         if total_loss > 0.0:
-            losses[notice_date] = losses.get(notice_date, 0.0) + total_loss
-            if debtor_id not in debtor_notice or notice_date < debtor_notice[debtor_id]:
-                debtor_notice[debtor_id] = notice_date
-    return losses, debtor_notice
+            losses[default_event_date] = losses.get(default_event_date, 0.0) + total_loss
+            if (
+                debtor_id not in debtor_default_event
+                or default_event_date < debtor_default_event[debtor_id]
+            ):
+                debtor_default_event[debtor_id] = default_event_date
+    return losses, debtor_default_event
 
 
 def _write_down_cashflows_from_losses(
-    losses_by_notice: dict[date, float],
+    losses_by_event_date: dict[date, float],
     pool_sched_by_date: dict[date, float],
     total_stack_asof: float,
     attachment_point: float,
@@ -401,10 +403,10 @@ def _write_down_cashflows_from_losses(
     cum_portfolio_loss = 0.0
     cfs: list[tuple[date, float]] = []
     total_tranche_loss = 0.0
-    for nd in sorted(losses_by_notice):
-        delta_loss = float(losses_by_notice[nd])
+    for event_date in sorted(losses_by_event_date):
+        delta_loss = float(losses_by_event_date[event_date])
         attach_notional, detach_notional = scheduled_tranche_band(
-            total_stack_sched=float(pool_sched_by_date[nd]),
+            total_stack_sched=float(pool_sched_by_date[event_date]),
             total_stack_asof=total_stack_asof,
             attachment_point=attachment_point,
             detachment_point=detachment_point,
@@ -417,7 +419,7 @@ def _write_down_cashflows_from_losses(
             detachment_notional=detach_notional,
         )
         total_tranche_loss += delta_tr_loss
-        cfs.append((nd, write_down_cashflow(delta_tr_loss)))
+        cfs.append((event_date, write_down_cashflow(delta_tr_loss)))
         cum_portfolio_loss += delta_loss
     return cfs, total_tranche_loss
 
@@ -563,7 +565,7 @@ def _price_path_range(
         else:
             prepayment_date_by_loan = ctx.prepayment_none_map
 
-        losses_by_notice, debtor_notice = _path_losses_by_notice(
+        losses_by_event_date, debtor_default_event = _path_losses_by_default_event(
             debtor_loans=ctx.debtor_loans,
             debtor_ids=ctx.prepared.debtor_ids,
             tau_years_row=ctx.tau_matrix[p],
@@ -572,9 +574,9 @@ def _price_path_range(
             prepayment_date_by_loan=prepayment_date_by_loan,
             basis_days=ctx.basis_days,
         )
-        sorted_notices = sorted(losses_by_notice.keys())
-        if sorted_notices:
-            event_dates = sorted({*ctx.static_event_dates, *sorted_notices})
+        sorted_event_dates = sorted(losses_by_event_date.keys())
+        if sorted_event_dates:
+            event_dates = sorted({*ctx.static_event_dates, *sorted_event_dates})
         else:
             event_dates = list(ctx.static_event_dates)
 
@@ -586,8 +588,8 @@ def _price_path_range(
             replenishment_end_date=ctx.replenishment_end_date,
             cap_amount=float(getattr(ctx.prepared.config, "REPLENISHMENT_CAP_AMOUNT", ctx.total_stack_asof)),
             prepayment_date_by_loan=prepayment_date_by_loan,
-            debtor_notice_date=debtor_notice,
-            losses_by_notice=losses_by_notice,
+            debtor_default_event_date=debtor_default_event,
+            losses_by_default_event=losses_by_event_date,
             n_ref_asof=ctx.total_stack_asof,
             shared_total_balance_cache=shared_total_balance_cache,
             shared_all_balance_cache=shared_all_balance_cache,
@@ -601,7 +603,7 @@ def _price_path_range(
             attachment_point=ctx.attachment_point,
             detachment_point=ctx.detachment_point,
             tranche_amortization_mode=ctx.tranche_amortization_mode,
-            delta_loss_by_notice=losses_by_notice,
+            delta_loss_by_event_date=losses_by_event_date,
         )
         if n_tr_asof <= 0.0:
             if progress_callback is not None:
@@ -609,7 +611,7 @@ def _price_path_range(
             continue
 
         wd_cfs_raw, path_tr_loss_full = _write_down_cashflows_from_losses(
-            losses_by_notice=losses_by_notice,
+            losses_by_event_date=losses_by_event_date,
             pool_sched_by_date=pool_sched_by_date,
             total_stack_asof=ctx.total_stack_asof,
             attachment_point=ctx.attachment_point,
@@ -628,7 +630,7 @@ def _price_path_range(
             if pay_date <= prev:
                 prev = pay_date
                 continue
-            notices = [d for d in sorted_notices if prev < d < pay_date]
+            period_events = [d for d in sorted_event_dates if prev < d < pay_date]
 
             def n_tr_at_start(d: date) -> float:
                 return _notional_at_date(
@@ -638,13 +640,13 @@ def _price_path_range(
                     attachment_point=ctx.attachment_point,
                     detachment_point=ctx.detachment_point,
                     tranche_amortization_mode=ctx.tranche_amortization_mode,
-                    delta_loss_by_notice=losses_by_notice,
+                    delta_loss_by_event_date=losses_by_event_date,
                 )
 
             prem_amt = premium_accrual_piecewise(
                 period_start=prev,
                 period_end=pay_date,
-                notice_dates_in_period=notices,
+                event_dates_in_period=period_events,
                 n_tr_at_start_of_date=n_tr_at_start,
                 spread=float(ctx.prepared.config.PREMIUM_SPREAD),
                 premium_day_count=premium_day_count,
@@ -652,7 +654,7 @@ def _price_path_range(
             pv01_amt = premium_accrual_piecewise(
                 period_start=prev,
                 period_end=pay_date,
-                notice_dates_in_period=notices,
+                event_dates_in_period=period_events,
                 n_tr_at_start_of_date=n_tr_at_start,
                 spread=1.0,
                 premium_day_count=premium_day_count,
@@ -668,7 +670,7 @@ def _price_path_range(
             attachment_point=ctx.attachment_point,
             detachment_point=ctx.detachment_point,
             tranche_amortization_mode=ctx.tranche_amortization_mode,
-            delta_loss_by_notice=losses_by_notice,
+            delta_loss_by_event_date=losses_by_event_date,
         )
         red_cf = redemption_cashflow(n_tr_lfm)
         red_cfs = [(ctx.dates.legal_final, red_cf)] if ctx.dates.legal_final > ctx.dates.as_of else []
