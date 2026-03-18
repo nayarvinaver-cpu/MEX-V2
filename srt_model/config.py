@@ -11,6 +11,8 @@ class ConfigValidationError(ValueError):
 
 TRANCHE_AMORTIZATION_MODE_PRO_RATA = "PRO_RATA"
 TRANCHE_AMORTIZATION_MODE_SEQUENTIAL = "SEQUENTIAL"
+DEFAULT_TIMING_MODE_CONTINUOUS = "CONTINUOUS"
+DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT = "QUARTERLY_MIDPOINT"
 
 
 # Spec 13/14/15: allowed calendar set and joint-calendar behavior.
@@ -135,6 +137,30 @@ def normalize_tranche_amortization_mode(value: Any) -> str:
     return mode
 
 
+def normalize_default_timing_mode(value: Any) -> str:
+    """Normalize the selected default-timing mode."""
+    if _is_empty(value):
+        return DEFAULT_TIMING_MODE_CONTINUOUS
+
+    raw = str(value).strip().upper()
+    aliases = {
+        "MIDPOINT": DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT,
+        "QUARTERLY": DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT,
+        "QUARTERLYMIDPOINT": DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT,
+    }
+    mode = aliases.get(raw, raw)
+    if mode not in {
+        DEFAULT_TIMING_MODE_CONTINUOUS,
+        DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT,
+    }:
+        raise ConfigValidationError(
+            f"Unsupported DEFAULT_TIMING_MODE '{value}'. "
+            f"Allowed: {DEFAULT_TIMING_MODE_CONTINUOUS}, "
+            f"{DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT}."
+        )
+    return mode
+
+
 def resolve_tranche_band_points(cfg: Any) -> tuple[float, float]:
     """Parse and validate selected tranche attachment/detachment points."""
     try:
@@ -161,4 +187,5 @@ def load_and_validate_config(module_name: str = "srt_model_config") -> Any:
     resolve_calendar_selection(cfg)
     resolve_tranche_band_points(cfg)
     normalize_tranche_amortization_mode(getattr(cfg, "TRANCHE_AMORTIZATION_MODE", None))
+    normalize_default_timing_mode(getattr(cfg, "DEFAULT_TIMING_MODE", None))
     return cfg

@@ -12,6 +12,9 @@ import pandas as pd
 
 from srt_model.config import (
     ConfigValidationError,
+    DEFAULT_TIMING_MODE_CONTINUOUS,
+    DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT,
+    normalize_default_timing_mode,
     normalize_tranche_amortization_mode,
     resolve_tranche_band_points,
     resolve_calendar_selection,
@@ -90,6 +93,8 @@ class _PathPricingContext:
     total_stack_asof: float
     attachment_point: float
     detachment_point: float
+    default_timing_mode: str
+    default_timing_period_boundaries: tuple[date, ...]
     tranche_amortization_mode: str
     our_share: float
     tau_matrix: np.ndarray
@@ -263,6 +268,61 @@ def _tau_years_to_date(as_of_date: date, tau_years: float, basis_days: float) ->
     return as_of_date + timedelta(days=days)
 
 
+def _build_default_timing_period_boundaries(
+    dates: _ValuationDates,
+    payment_dates: Iterable[date],
+) -> tuple[date, ...]:
+    boundaries = {dates.as_of, dates.accrual_end, *payment_dates}
+    if dates.protection_end > dates.accrual_end:
+        boundaries.add(dates.protection_end)
+    return tuple(sorted(d for d in boundaries if d >= dates.as_of))
+
+
+def _period_midpoint_date(period_start: date, period_end: date) -> date:
+    if period_end <= period_start:
+        return period_start
+    half_days = max(0, (period_end - period_start).days // 2)
+    return period_start + timedelta(days=half_days)
+
+
+def _quarterly_midpoint_default_event_date(
+    default_date: date,
+    period_boundaries: tuple[date, ...],
+    calendar_selection,
+) -> date | None:
+    if len(period_boundaries) < 2:
+        return compute_default_event_date(default_date=default_date, calendar_selection=calendar_selection)
+
+    for idx in range(1, len(period_boundaries)):
+        if default_date <= period_boundaries[idx]:
+            midpoint = _period_midpoint_date(period_boundaries[idx - 1], period_boundaries[idx])
+            return compute_default_event_date(default_date=midpoint, calendar_selection=calendar_selection)
+    return None
+
+
+def _effective_default_and_event_dates(
+    *,
+    raw_default_date: date,
+    default_timing_mode: str,
+    period_boundaries: tuple[date, ...],
+    calendar_selection,
+) -> tuple[date, date] | None:
+    if default_timing_mode == DEFAULT_TIMING_MODE_QUARTERLY_MIDPOINT:
+        midpoint_event_date = _quarterly_midpoint_default_event_date(
+            default_date=raw_default_date,
+            period_boundaries=period_boundaries,
+            calendar_selection=calendar_selection,
+        )
+        if midpoint_event_date is None:
+            return None
+        return midpoint_event_date, midpoint_event_date
+
+    return (
+        raw_default_date,
+        compute_default_event_date(default_date=raw_default_date, calendar_selection=calendar_selection),
+    )
+
+
 def _build_valuation_dates(prepared: PreparedInputs):
     cfg = prepared.config
     selection = resolve_calendar_selection(cfg)
@@ -343,6 +403,8 @@ def _path_losses_by_default_event(
     tau_years_row: np.ndarray,
     dates: _ValuationDates,
     calendar_selection,
+    default_timing_mode: str,
+    default_timing_period_boundaries: tuple[date, ...],
     prepayment_date_by_loan: dict[str, date | None],
     basis_days: float,
 ) -> tuple[dict[date, float], dict[str, date]]:
@@ -353,23 +415,28 @@ def _path_losses_by_default_event(
         tau_date = _tau_years_to_date(dates.as_of, float(tau_years_row[j]), basis_days=basis_days)
         if tau_date is None:
             continue
-        if tau_date < dates.protection_start or tau_date > dates.protection_end:
-            continue
 
-        default_event_date = compute_default_event_date(
-            default_date=tau_date,
+        default_dates = _effective_default_and_event_dates(
+            raw_default_date=tau_date,
+            default_timing_mode=default_timing_mode,
+            period_boundaries=default_timing_period_boundaries,
             calendar_selection=calendar_selection,
         )
+        if default_dates is None:
+            continue
+        effective_default_date, default_event_date = default_dates
+        if effective_default_date < dates.protection_start or effective_default_date > dates.protection_end:
+            continue
 
         total_loss = 0.0
         for loan in debtor_loans.get(debtor_id, []):
             # Spec 81/204: if tau > maturity, loan is out of risk set.
-            if tau_date > loan.maturity_date:
+            if effective_default_date > loan.maturity_date:
                 continue
             # Spec 57/58: EAD frozen at default date.
             ead = ead_at_default(
                 loan,
-                tau_date=tau_date,
+                tau_date=effective_default_date,
                 as_of_date=dates.as_of,
                 prepayment_date=prepayment_date_by_loan.get(loan.loan_id),
             )
@@ -490,6 +557,8 @@ def _build_path_context(
     total_stack_asof: float,
     attachment_point: float,
     detachment_point: float,
+    default_timing_mode: str,
+    default_timing_period_boundaries: tuple[date, ...],
     tranche_amortization_mode: str,
     our_share: float,
     tau_matrix: np.ndarray,
@@ -525,6 +594,8 @@ def _build_path_context(
         total_stack_asof=float(total_stack_asof),
         attachment_point=float(attachment_point),
         detachment_point=float(detachment_point),
+        default_timing_mode=str(default_timing_mode),
+        default_timing_period_boundaries=tuple(default_timing_period_boundaries),
         tranche_amortization_mode=str(tranche_amortization_mode),
         our_share=float(our_share),
         tau_matrix=np.asarray(tau_matrix, dtype=float),
@@ -571,6 +642,8 @@ def _price_path_range(
             tau_years_row=ctx.tau_matrix[p],
             dates=ctx.dates,
             calendar_selection=ctx.calendar_selection,
+            default_timing_mode=ctx.default_timing_mode,
+            default_timing_period_boundaries=ctx.default_timing_period_boundaries,
             prepayment_date_by_loan=prepayment_date_by_loan,
             basis_days=ctx.basis_days,
         )
@@ -717,6 +790,7 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
     if our_share < 0.0 or our_share > 1.0:
         raise ConfigValidationError("OUR_PERCENTAGE must be in [0,1].")
     attachment_point, detachment_point = resolve_tranche_band_points(cfg)
+    default_timing_mode = normalize_default_timing_mode(getattr(cfg, "DEFAULT_TIMING_MODE", None))
     tranche_amortization_mode = normalize_tranche_amortization_mode(
         getattr(cfg, "TRANCHE_AMORTIZATION_MODE", None)
     )
@@ -731,6 +805,7 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
         eom_on=bool(cfg.EOM_ON),
         calendar_selection=calendar_selection,
     )
+    default_timing_period_boundaries = _build_default_timing_period_boundaries(dates, payment_dates)
     quarter_dates = _quarter_dates(
         first_payment=dates.first_payment,
         legal_final=dates.legal_final,
@@ -796,6 +871,8 @@ def price_prepared_inputs(prepared: PreparedInputs) -> PricingResult:
         total_stack_asof=total_stack_asof,
         attachment_point=attachment_point,
         detachment_point=detachment_point,
+        default_timing_mode=default_timing_mode,
+        default_timing_period_boundaries=default_timing_period_boundaries,
         tranche_amortization_mode=tranche_amortization_mode,
         our_share=our_share,
         tau_matrix=tau_matrix,

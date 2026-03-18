@@ -101,6 +101,10 @@ NUM_SIMULATIONS = 1000
 # Set to 1 for single-process pricing. Set to 0 to auto-use available CPU cores.
 # Parallel pricing currently uses process-based workers on platforms that support the "fork" start method.
 PRICING_NUM_WORKERS = 0
+# Default timing granularity used for write-down timing, premium stop, and defaulted-pool exclusion.
+# - "CONTINUOUS": use the simulated default date directly, adjusted to the next business day.
+# - "QUARTERLY_MIDPOINT": bucket defaults into the existing 3M roll periods (including initial/final stubs) and use the period midpoint, adjusted to the next business day.
+DEFAULT_TIMING_MODE = "CONTINUOUS"
 # If True, prints a live progress bar while Monte Carlo paths are being priced.
 # This is useful for long runs so you can see that the model is still working and estimate time remaining.
 ENABLE_PROGRESS_BAR = True

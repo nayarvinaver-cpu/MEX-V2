@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from datetime import date
 import multiprocessing as mp
 import os
 import tempfile
 from types import SimpleNamespace
 import unittest
 
+import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
+from srt_model.config import resolve_calendar_selection
 from srt_model.pipeline import build_prepared_inputs_from_cfg
+from srt_model.pool.ead import ead_at_default
+import srt_model.pv.pricing as pricing_mod
 from srt_model.pv.pricing import price_prepared_inputs
 
 
@@ -34,6 +39,7 @@ def _cfg_for_pricing(tape_path: str, **overrides) -> SimpleNamespace:
         JOINT_CALENDAR_COUNTRIES=[],
         ATTACHMENT_POINT=0.0,
         DETACHMENT_POINT=0.061,
+        DEFAULT_TIMING_MODE="CONTINUOUS",
         TRANCHE_AMORTIZATION_MODE="PRO_RATA",
         OUR_PERCENTAGE=0.30,
         INTERNAL_TO_EXTERNAL_RATING={
@@ -168,6 +174,96 @@ class TestPricingEngine(unittest.TestCase):
         self.assertAlmostEqual(sequential.pv_write_down, 0.0, places=12)
         self.assertGreater(sequential.pv_premium, pro_rata.pv_premium)
         self.assertGreater(sequential.pv_redemption, pro_rata.pv_redemption)
+
+    def test_quarterly_midpoint_uses_initial_stub_midpoint_and_midpoint_ead(self) -> None:
+        cfg = _cfg_for_pricing(self._tmp.name, DEFAULT_TIMING_MODE="QUARTERLY_MIDPOINT")
+        prepared = build_prepared_inputs_from_cfg(cfg)
+        selection = resolve_calendar_selection(cfg)
+        dates = pricing_mod._ValuationDates(
+            as_of=prepared.as_of_date,
+            accrual_start=prepared.as_of_date,
+            accrual_end=pd.Timestamp(cfg.ACCRUAL_END_DATE).date(),
+            protection_start=pd.Timestamp(cfg.PROTECTION_START_DATE).date(),
+            protection_end=pd.Timestamp(cfg.PROTECTION_END_DATE).date(),
+            legal_final=pd.Timestamp(cfg.LEGAL_FINAL_MATURITY_DATE).date(),
+            first_payment=pd.Timestamp(cfg.FIRST_PAYMENT_DATE).date(),
+        )
+        payment_dates = tuple(
+            pd.Timestamp(d).date()
+            for d in [
+                "2026-03-31",
+                "2026-06-30",
+                "2026-09-30",
+                "2026-12-31",
+                "2027-03-31",
+                "2027-06-30",
+                "2027-09-30",
+                "2027-12-31",
+            ]
+        )
+        boundaries = pricing_mod._build_default_timing_period_boundaries(dates, payment_dates)
+        effective_default_date, event_date = pricing_mod._effective_default_and_event_dates(
+            raw_default_date=date(2026, 1, 10),
+            default_timing_mode="QUARTERLY_MIDPOINT",
+            period_boundaries=boundaries,
+            calendar_selection=selection,
+        )
+        self.assertEqual(effective_default_date, date(2026, 2, 16))
+        self.assertEqual(event_date, date(2026, 2, 16))
+
+        loan = next(loan for loan in prepared.loans if loan.loan_id == "L2")
+        losses, debtor_events = pricing_mod._path_losses_by_default_event(
+            debtor_loans={"D2": [loan]},
+            debtor_ids=["D2"],
+            tau_years_row=np.array([10.0 / 365.25]),
+            dates=dates,
+            calendar_selection=selection,
+            default_timing_mode="QUARTERLY_MIDPOINT",
+            default_timing_period_boundaries=boundaries,
+            prepayment_date_by_loan={loan.loan_id: None},
+            basis_days=365.25,
+        )
+        midpoint_loss = ead_at_default(
+            loan,
+            tau_date=date(2026, 2, 16),
+            as_of_date=prepared.as_of_date,
+            prepayment_date=None,
+        ) * max(float(loan.lgd_econ), float(loan.lgd_reg))
+        continuous_loss = ead_at_default(
+            loan,
+            tau_date=date(2026, 1, 10),
+            as_of_date=prepared.as_of_date,
+            prepayment_date=None,
+        ) * max(float(loan.lgd_econ), float(loan.lgd_reg))
+
+        self.assertEqual(debtor_events, {"D2": date(2026, 2, 16)})
+        self.assertAlmostEqual(losses[date(2026, 2, 16)], midpoint_loss, places=10)
+        self.assertLess(midpoint_loss, continuous_loss)
+
+    def test_quarterly_midpoint_assigns_boundary_defaults_to_prior_period(self) -> None:
+        cfg = _cfg_for_pricing(self._tmp.name, DEFAULT_TIMING_MODE="QUARTERLY_MIDPOINT")
+        dates = pricing_mod._ValuationDates(
+            as_of=date(2025, 12, 31),
+            accrual_start=date(2025, 12, 31),
+            accrual_end=date(2027, 12, 31),
+            protection_start=date(2025, 12, 31),
+            protection_end=date(2027, 12, 31),
+            legal_final=date(2028, 6, 30),
+            first_payment=date(2026, 3, 31),
+        )
+        selection = resolve_calendar_selection(cfg)
+        boundaries = pricing_mod._build_default_timing_period_boundaries(
+            dates,
+            (date(2026, 3, 31), date(2026, 6, 30)),
+        )
+        effective_default_date, event_date = pricing_mod._effective_default_and_event_dates(
+            raw_default_date=date(2026, 3, 31),
+            default_timing_mode="QUARTERLY_MIDPOINT",
+            period_boundaries=boundaries,
+            calendar_selection=selection,
+        )
+        self.assertEqual(effective_default_date, date(2026, 2, 16))
+        self.assertEqual(event_date, date(2026, 2, 16))
 
 
 if __name__ == "__main__":
