@@ -174,14 +174,14 @@ def _non_defaulted_balances(
     loans_by_id: dict[str, LoanRecord],
     balances: dict[str, float],
     t: date,
-    debtor_notice_date: dict[str, date],
+    debtor_default_event_date: dict[str, date],
 ) -> dict[str, float]:
     out: dict[str, float] = {}
     for lid, bal in balances.items():
         if bal <= 0.0:
             continue
-        nd = debtor_notice_date.get(loans_by_id[lid].debtor_id)
-        if nd is not None and t >= nd:
+        default_event = debtor_default_event_date.get(loans_by_id[lid].debtor_id)
+        if default_event is not None and t >= default_event:
             continue
         out[lid] = float(bal)
     return out
@@ -499,8 +499,8 @@ def _build_path_pool_balance_schedule_scalar_topup(
     replenishment_end_date: date,
     cap_amount: float,
     prepayment_date_by_loan: dict[str, date | None],
-    debtor_notice_date: dict[str, date],
-    losses_by_notice: dict[date, float],
+    debtor_default_event_date: dict[str, date],
+    losses_by_default_event: dict[date, float],
     n_ref_asof: float,
     shared_total_balance_cache: dict[date, float] | None,
     shared_all_balance_cache: dict[date, dict[str, float]] | None,
@@ -539,14 +539,14 @@ def _build_path_pool_balance_schedule_scalar_topup(
                 runoff = 0.0
             topup *= runoff
 
-        cumulative_loss += float(losses_by_notice.get(t, 0.0))
+        cumulative_loss += float(losses_by_default_event.get(t, 0.0))
         replenish_allowed = t <= replenishment_end_date and stop_date is None
         if replenish_allowed:
             non_defaulted = _non_defaulted_balances(
                 loans_by_id,
                 _get_all_balances(t),
                 t,
-                debtor_notice_date,
+                debtor_default_event_date,
             )
             stop_reason_now = _evaluate_stop_event_reason(
                 cfg=cfg,
@@ -663,8 +663,8 @@ def _build_path_pool_balance_schedule_vintage_loans(
     replenishment_end_date: date,
     cap_amount: float,
     prepayment_date_by_loan: dict[str, date | None],
-    debtor_notice_date: dict[str, date],
-    losses_by_notice: dict[date, float],
+    debtor_default_event_date: dict[str, date],
+    losses_by_default_event: dict[date, float],
     n_ref_asof: float,
     shared_total_balance_cache: dict[date, float] | None,
     shared_all_balance_cache: dict[date, dict[str, float]] | None,
@@ -697,14 +697,14 @@ def _build_path_pool_balance_schedule_vintage_loans(
         base_bal = _get_total_balance(t)
         synthetic_state = synthetic_tracker.snapshot()
 
-        cumulative_loss += float(losses_by_notice.get(t, 0.0))
+        cumulative_loss += float(losses_by_default_event.get(t, 0.0))
         replenish_allowed = t <= replenishment_end_date and stop_date is None
         if replenish_allowed:
             original_non_defaulted = _non_defaulted_balances(
                 loans_by_id,
                 _get_all_balances(t),
                 t,
-                debtor_notice_date,
+                debtor_default_event_date,
             )
             original_state = _build_original_pool_state(loans_by_id, original_non_defaulted)
             stop_reason_now = _evaluate_stop_event_reason(
@@ -748,8 +748,8 @@ def build_path_pool_balance_schedule(
     replenishment_end_date: date,
     cap_amount: float,
     prepayment_date_by_loan: dict[str, date | None],
-    debtor_notice_date: dict[str, date],
-    losses_by_notice: dict[date, float],
+    debtor_default_event_date: dict[str, date],
+    losses_by_default_event: dict[date, float],
     n_ref_asof: float,
     shared_total_balance_cache: dict[date, float] | None = None,
     shared_all_balance_cache: dict[date, dict[str, float]] | None = None,
@@ -769,8 +769,8 @@ def build_path_pool_balance_schedule(
             replenishment_end_date=replenishment_end_date,
             cap_amount=cap_amount,
             prepayment_date_by_loan=prepayment_date_by_loan,
-            debtor_notice_date=debtor_notice_date,
-            losses_by_notice=losses_by_notice,
+            debtor_default_event_date=debtor_default_event_date,
+            losses_by_default_event=losses_by_default_event,
             n_ref_asof=n_ref_asof,
             shared_total_balance_cache=shared_total_balance_cache,
             shared_all_balance_cache=shared_all_balance_cache,
@@ -783,8 +783,8 @@ def build_path_pool_balance_schedule(
         replenishment_end_date=replenishment_end_date,
         cap_amount=cap_amount,
         prepayment_date_by_loan=prepayment_date_by_loan,
-        debtor_notice_date=debtor_notice_date,
-        losses_by_notice=losses_by_notice,
+        debtor_default_event_date=debtor_default_event_date,
+        losses_by_default_event=losses_by_default_event,
         n_ref_asof=n_ref_asof,
         shared_total_balance_cache=shared_total_balance_cache,
         shared_all_balance_cache=shared_all_balance_cache,

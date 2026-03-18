@@ -132,8 +132,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 12, 31),
             cap_amount=120.0,
             prepayment_date_by_loan={"L1": None},
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         self.assertGreaterEqual(out.pool_balance_sched_by_date[date(2025, 12, 31)], 119.99)
@@ -151,8 +151,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 12, 31),
             cap_amount=120.0,
             prepayment_date_by_loan={"L1": None},
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         self.assertGreaterEqual(out.pool_balance_sched_by_date[date(2025, 12, 31)], 119.99)
@@ -171,8 +171,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 3, 31),
             cap_amount=120.0,
             prepayment_date_by_loan=prepay,
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         vintage = build_path_pool_balance_schedule(
@@ -183,8 +183,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 3, 31),
             cap_amount=120.0,
             prepayment_date_by_loan=prepay,
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
 
@@ -204,8 +204,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 12, 31),
             cap_amount=120.0,
             prepayment_date_by_loan={"L1": None},
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         self.assertAlmostEqual(out.pool_balance_sched_by_date[date(2025, 12, 31)], 100.0, places=8)
@@ -229,8 +229,8 @@ class TestReplenishment(unittest.TestCase):
                 replenishment_end_date=date(2026, 12, 31),
                 cap_amount=120.0,
                 prepayment_date_by_loan={"L1": None},
-                debtor_notice_date={},
-                losses_by_notice={},
+                debtor_default_event_date={},
+                losses_by_default_event={},
                 n_ref_asof=100.0,
             )
         self.assertEqual(out.stop_event_reason, "WAPD stop event")
@@ -249,8 +249,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 12, 31),
             cap_amount=200.0,
             prepayment_date_by_loan={"L1": None},
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         self.assertAlmostEqual(out.pool_balance_sched_by_date[date(2025, 12, 31)], 100.0, places=8)
@@ -270,8 +270,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 12, 31),
             cap_amount=120.0,
             prepayment_date_by_loan={"L1": None},
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         self.assertAlmostEqual(out.pool_balance_sched_by_date[date(2025, 12, 31)], 100.0, places=8)
@@ -295,8 +295,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 12, 31),
             cap_amount=200.0,
             prepayment_date_by_loan={"L1": None},
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         self.assertAlmostEqual(out.pool_balance_sched_by_date[date(2025, 12, 31)], expected_pool, places=6)
@@ -320,8 +320,8 @@ class TestReplenishment(unittest.TestCase):
             replenishment_end_date=date(2026, 12, 31),
             cap_amount=150.0,
             prepayment_date_by_loan={"GOOD": date(2026, 3, 31), "BAD": None},
-            debtor_notice_date={},
-            losses_by_notice={},
+            debtor_default_event_date={},
+            losses_by_default_event={},
             n_ref_asof=100.0,
         )
         self.assertIsNone(out.stop_event_reason)

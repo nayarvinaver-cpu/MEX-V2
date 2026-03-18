@@ -126,16 +126,17 @@ def redemption_cashflow(n_tr_before_lfm: float) -> float:
 def premium_accrual_piecewise(
     period_start: date,
     period_end: date,
-    notice_dates_in_period: Iterable[date],
+    event_dates_in_period: Iterable[date],
     n_tr_at_start_of_date: Callable[[date], float],
     spread: float,
     premium_day_count: str,
 ) -> float:
-    """Premium accrual with intra-period segmentation at Notice Dates.
+    """Premium accrual with intra-period segmentation at default event dates.
 
-    Spec 161/162 and 49/50: split [T_k, T_k+1) at notice dates; use notional at start of each segment.
+    Split [T_k, T_k+1) at default-driven write-down dates and use notional at
+    the start of each segment.
     """
-    cuts = sorted({d for d in notice_dates_in_period if period_start < d < period_end})
+    cuts = sorted({d for d in event_dates_in_period if period_start < d < period_end})
     points = [period_start, *cuts, period_end]
     total = 0.0
     for a, b in zip(points[:-1], points[1:]):
